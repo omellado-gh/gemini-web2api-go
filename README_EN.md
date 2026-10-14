@@ -330,6 +330,7 @@ Saving takes effect **immediately**, no restart. Values live in the database and
 | Prompt byte cap | over the cap: with a cookie the history is sent as a text attachment (usable length up to ~160,000 bytes), without one the request is rejected with 400 `context_length_exceeded`. Neither path truncates silently. Counted in UTF-8 bytes (the upstream limit is byte-based, not token-based), default 128000. 0 = unlimited |
 | Multi-turn (`multi_turn`) | off by default. When on, uses Gemini's native conversation_id server-side continuation — the client resends full history each turn, the server detects the continuation and sends only the newest message while history stays server-side, so long conversations no longer hit the single-request byte wall. Works signed-in or anonymous. **Note**: it does not enlarge the model's context window; content past the window is still evicted (recent-kept sliding window). It solves "long chat without hitting the wall + keep recent context", not "feed a huge document". |
 | Auto-delete conversation (`auto_delete_conversation`) | off by default. When on, each finished request deletes the conversation it left on gemini.google.com, so signed-in accounts don't pile them up. Signed-in only; async best-effort, a failed delete doesn't affect the response. |
+| Temporary chat (`temporary_chat`) | off by default. When on, uses Gemini web's native **Temporary Chat** (`inner[45]=1`): the conversation never enters the account's chat list and isn't used for model training — cleaner than auto-delete, and it saves that extra delete request. Only meaningful signed-in; automatically inactive when server-side multi-turn is on (a temporary chat leaves no list entry, while multi-turn relies on the server keeping the conversation). |
 | Anonymous-first (`anon_first`) | off by default. When on, requests that don't need a signed-in session (plain text, no thinking, no tool, no image) go out anonymously without consuming a cookie account, saving account quota; only 3.1 Pro / 3.8 Flash / extended thinking / image gen / file upload etc. pick an account. When off, any request uses an account as long as the pool has one. |
 | Force tools on the first turn (`force_tool_first_turn`) | off by default. When on, on the first turn of a tool-enabled session with `tool_choice` auto/absent, the proxy raises it to required so the model starts acting (listing/reading) instead of answering in prose. Useful with agentic clients and weak models; it may force a call even when the message doesn't need one. |
 | Retry attempts / retry delay / upstream timeout | |
@@ -605,8 +606,10 @@ Paid accounts only: `gemini-3.8-flash` (free accounts are downgraded to 3.5 Flas
 
 Each request is its own conversation by default. Enable **server-side multi-turn** (`multi_turn`) on the panel's
 Settings page and consecutive messages of one conversation reuse the same web session, sending only the newest
-turn while history stays server-side. To stop conversations piling up in the web app, also enable
-**auto-delete web conversation** (`auto_delete_conversation`), which removes the conversation once the reply is done.
+turn while history stays server-side. To stop conversations piling up in the web app, you have two options:
+enable **temporary chat** (`temporary_chat`) so the conversation never enters the list at all (cleaner, not used
+for training, nothing to delete — recommended), or enable **auto-delete web conversation**
+(`auto_delete_conversation`) to delete it after each reply. Both only matter for signed-in accounts.
 
 ### Can I use it as the backend for Cursor / Dify / WorkBuddy-style agents?
 

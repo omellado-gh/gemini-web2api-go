@@ -55,6 +55,10 @@ type RuntimeConfig struct {
 	// 匿名优先（#20）：不需要登录态能力的请求（纯文本、非思考、无工具、无图）走匿名、
 	// 不占 cookie 账号，省账号额度；需要登录才挑号。默认 false，见 modelNeedsLogin。
 	AnonFirst bool `json:"anon_first"`
+	// 临时对话（#34）：塞 inner[45]=1，走网页端原生「临时对话」——不进会话列表、不入训练，
+	// 取代 auto_delete_conversation（省掉删除 RPC）。只登录态有意义，与 multi_turn 冲突
+	// （multi_turn 开着时不发）。默认 false，见 temporaryChatEligible。
+	TemporaryChat bool `json:"temporary_chat"`
 }
 
 const runtimeConfigKey = "runtime_config"
@@ -89,6 +93,7 @@ func initRuntimeConfig() {
 
 		AutoDeleteConversation: cfg.AutoDeleteConversation,
 		AnonFirst:              cfg.AnonFirst,
+		TemporaryChat:          cfg.TemporaryChat,
 	}
 	if raw := kvGet(runtimeConfigKey); raw != "" {
 		saved := base

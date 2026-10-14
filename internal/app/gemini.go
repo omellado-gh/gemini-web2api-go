@@ -531,6 +531,12 @@ func streamGenerateWithFiles(prompt, latest string, mc ModelConfig, pending []pe
 	// Nosotros escribíamos [2], un valor copiado en una etapa temprana y desmentido a nivel de protocolo. Su significado sigue sin conocerse;
 	// con anónimo pasan ambos valores, pero no hay motivo para seguir desviándose del navegador.
 	inner[41] = []interface{}{1}
+	// 临时对话（#34）：inner[45]=1 让这条不进账号的会话列表、不入训练。只在有登录
+	// cookie 时发——匿名本就不落账号，发了也没意义且没验过。multi_turn 开着时
+	// temporaryChatEligible 直接为假（两者冲突，见那里）。
+	if temporaryChatEligible() && cookieStr != "" {
+		inner[45] = 1
+	}
 	inner[53] = 0
 	reqUUID := uuid.NewString()
 	inner[59] = reqUUID

@@ -47,6 +47,11 @@ type Config struct {
 	// 匿名优先（#20）：这次请求不需要登录态能力（纯文本、非思考、无工具、无图）时
 	// 不占用 cookie 账号，走匿名省额度；需要登录才挑号。默认 false。见 modelNeedsLogin。
 	AnonFirst bool `json:"anon_first"`
+	// 临时对话（#34）：发请求时塞 inner[45]=1，走 Gemini 网页端原生「临时对话」——
+	// 会话不进账号的会话列表、不用于训练，天然取代 auto_delete_conversation（无需再发删除
+	// RPC）。只登录态有意义（匿名本就不落账号）。与 multi_turn 冲突：multi_turn 开着时不发，
+	// 见 temporaryChatEligible。默认 false。
+	TemporaryChat bool `json:"temporary_chat"`
 }
 
 var (
@@ -88,6 +93,7 @@ func defaultConfig() Config {
 		MultiTurn:              false,
 		AutoDeleteConversation: false,
 		AnonFirst:              false,
+		TemporaryChat:          false,
 	}
 }
 

@@ -2,6 +2,19 @@
 
 Este proyecto sigue [Versionado semántico](https://semver.org/lang/zh-CN/).
 
+## 4.21.0
+
+### 新增
+
+- **临时对话 `temporary_chat`（issue #34）**。开启后发请求塞 `inner[45]=1`，走 Gemini 网页端
+  原生「临时对话」：会话压根不进账号的会话列表、不用于模型训练，比 #19 的「自动删会话」
+  （`auto_delete_conversation`）更干净——根本不建、不用删，顺带省掉那次 `GzXR5e` 删除请求。
+  只对登录号有意义（匿名本就不落账号）；与「服务端多轮续接」互斥，`multi_turn` 开着时不生效
+  （临时对话不留列表，多轮要靠服务端留会话）。面板「设置」可开关，默认关。
+  - 判据：实测坐实 `inner[45]=1` 就是这个开关——登录号发两条、单一变量，不带它的进会话列表
+    （rpc MaZiqc），带 `inner[45]=1` 的不进（控制臂在、实验臂消失）。参考实现里一起设的
+    `inner[41]=[1]` 是噪音，我们默认本就发 `[1]`。
+
 ## 4.20.2
 
 ### Correcciones
