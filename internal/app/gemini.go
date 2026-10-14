@@ -121,6 +121,16 @@ func anonFirstEligible(mc ModelConfig, hasAttachment bool) bool {
 	return rtCfg().AnonFirst && !hasAttachment && !modelNeedsLogin(mc)
 }
 
+// temporaryChatEligible 判断这次请求该不该走网页端原生「临时对话」（inner[45]=1，#34）。
+//
+// 与 multi_turn 冲突：临时对话不进会话列表，而 multi_turn 要按历史认出续接、靠服务端
+// 留着这串对话——两个一起开，续接那半就没了。所以 multi_turn 开着时一律不发 inner[45]，
+// 由 multi_turn 决定会话怎么留。调用点还会再要求有登录 cookie：匿名本来就不落账号，
+// 发 inner[45] 是没验过的无谓偏离。
+func temporaryChatEligible() bool {
+	return rtCfg().TemporaryChat && !rtCfg().MultiTurn
+}
+
 // availableModels 返回当前配置下值得暴露的模型。
 //
 // 没配 cookie 时排除 3.1 Pro：实测匿名请求它会被静默降级成 3.5 Flash-Lite，
@@ -504,6 +514,12 @@ func streamGenerateWithFiles(prompt, latest string, mc ModelConfig, pending []pe
 	// 我们原来写 [2]，是早期抄来的值、协议层已被证伪。含义仍未知，
 	// 匿名两个值都能通，但没有理由继续偏离浏览器。
 	inner[41] = []interface{}{1}
+	// 临时对话（#34）：inner[45]=1 让这条不进账号的会话列表、不入训练。只在有登录
+	// cookie 时发——匿名本就不落账号，发了也没意义且没验过。multi_turn 开着时
+	// temporaryChatEligible 直接为假（两者冲突，见那里）。
+	if temporaryChatEligible() && cookieStr != "" {
+		inner[45] = 1
+	}
 	inner[53] = 0
 	reqUUID := uuid.NewString()
 	inner[59] = reqUUID
@@ -705,7 +721,10 @@ func streamGenerateWithFiles(prompt, latest string, mc ModelConfig, pending []pe
 		}
 		// #19 自动删会话：出完结果把 gemini.google.com 上留下的这条会话删掉，避免
 		// 用户账号里堆一堆。只登录态能删（要 XSRF），异步 best-effort，不影响响应。
-		if rtCfg().AutoDeleteConversation && cookieStr != "" && xsrfToken != "" {
+		//
+		// 临时对话（#34）生效时跳过：那条压根没进会话列表，删它是多发一次 RPC 删空气。
+		// 这正是临时对话比 create-then-delete 省的那一次出站请求。
+		if rtCfg().AutoDeleteConversation && !temporaryChatEligible() && cookieStr != "" && xsrfToken != "" {
 			if cid := extractConversationID(string(raw)); cid != "" {
 				go deleteConversation(cid, cookieStr, sapisid, xsrfToken, proxyURL)
 			}
