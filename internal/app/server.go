@@ -129,51 +129,78 @@ func rejectUnsupported(req map[string]interface{}, messages []map[string]interfa
 	return nil
 }
 
+// callGemini ejecuta un turno por la ruta de un solo turno y, si se buffereó (onDelta == nil) y
+// hay tools, aplica un reintento correctivo cuando el tool_choice no se cumplió o los argumentos
+// no validan. Adopta el reintento solo si resuelve el problema; si no, conserva la primera
+// respuesta. En streaming real (onDelta != nil) no se reintenta: los bytes ya se enviaron.
 func callGemini(prompt, latest string, mc ModelConfig, tools []map[string]interface{},
+	toolChoice interface{}, images []pendingUpload, onDelta, onReasoning func(string)) (string, []ToolCall, *StreamResult, error) {
+	text, toolCalls, res, err := callGeminiOnce(prompt, latest, mc, tools, images, onDelta, onReasoning)
+	if err != nil || len(tools) == 0 || onDelta != nil {
+		return text, toolCalls, res, err
+	}
+	schemas := toolSchemas(tools)
+	if bad, argErrs := needsToolRetry(toolChoice, toolCalls, schemas); bad {
+		reinforced := prompt + "\n\n" + toolRetryReminder(toolChoice, argErrs)
+		t2, c2, r2, e2 := callGeminiOnce(reinforced, latest, mc, tools, images, nil, onReasoning)
+		if e2 == nil {
+			if stillBad, _ := needsToolRetry(toolChoice, c2, schemas); !stillBad {
+				logf("[tools] reintento correctivo adoptado (tool_choice/argumentos)")
+				return t2, c2, r2, nil
+			}
+			logf("[tools] el reintento no resolvió; se conserva la primera respuesta")
+		} else {
+			logf("[tools] reintento correctivo falló: %v", e2)
+		}
+	}
+	return text, toolCalls, res, err
+}
+
+func callGeminiOnce(prompt, latest string, mc ModelConfig, tools []map[string]interface{},
 	images []pendingUpload, onDelta, onReasoning func(string)) (string, []ToolCall, *StreamResult, error) {
 	res, err := streamGenerateWithFiles(prompt, latest, mc, images, onDelta, onReasoning)
 	if err != nil {
-		// res 非 nil：失败时它只带归属（哪个号 / 哪个出口），给 recordRequest 用
+		// res no es nil: en caso de fallo solo trae la atribución (qué cuenta / qué salida), para recordRequest
 		return "", nil, res, err
 	}
 	text := extractResponseText(res.Raw)
-	// 画布：HTML 文档内联在响应里（不像图/乐要下载），从 immersive 结构里抠出来。
-	// 标准文本提取只拿到 preamble（"I will generate…"），文档在 inner[4][0][30]…，
-	// 用 extractCanvasDoc 单独取。
+	// Canvas: el documento HTML va en línea en la respuesta (a diferencia de imagen/música, que hay que descargar); se extrae de la estructura immersive.
+	// La extracción estándar de texto solo obtiene el preamble ("I will generate…"); el documento está en inner[4][0][30]…,
+	// así que se toma aparte con extractCanvasDoc.
 	if mc.Tool == toolCanvas {
 		doc := extractCanvasDoc(res.Raw)
 		if doc == "" {
 			return "", nil, res, fmt.Errorf("canvas generation failed: no HTML document in response (raw %d bytes)", len(res.Raw))
 		}
 		if text != "" && !strings.Contains(doc, text) {
-			return text + "\n\n" + doc, nil, res, nil // preamble + 文档
+			return text + "\n\n" + doc, nil, res, nil // preamble + documento
 		}
 		return doc, nil, res, nil
 	}
-	// 媒体模型（生图/音乐）：生成 200 了但产物字节没取回来，直接报错而不是返回一个
-	// 只有文字没有图的半成品 —— 客户端要的就是那张图/那段乐。
+	// Modelos multimedia (generación de imagen/música): si la generación da 200 pero no se recuperan los bytes del producto, se da error directamente en vez de devolver
+	// un producto a medias solo con texto y sin imagen —— lo que el cliente quiere es esa imagen / esa música.
 	if mc.Tool == toolImage || mc.Tool == toolMusic || mc.Tool == toolVideo {
 		if len(res.Artifacts) == 0 {
 			msg := res.MediaErr
 			if msg == "" {
-				msg = "媒体产物取回失败"
+				msg = "fallo al recuperar el producto multimedia"
 			}
 			return "", nil, res, fmt.Errorf("media generation succeeded but artifact retrieval failed: %s", msg)
 		}
-		// 产物以 base64 data URL 追加到正文（可能没正文，只有图/乐/视频）。
+		// El producto se añade al cuerpo como data URL en base64 (puede no haber cuerpo y solo imagen/música/vídeo).
 		text = appendArtifactMarkdown(text, res.Artifacts)
 		return text, nil, res, nil
 	}
 	if text == "" {
-		// 上游拒绝时只回一个结束帧、没有内容帧（实测被拒时 raw 仅 216
-		// 字节）。这种情况必须报错：以前会当成空回复返回 200 + content:null，
-		// 客户端看不出请求其实失败了。
-		// 注意不能用 BardErrorInfo 判错 —— 正常响应的结束帧里也带这个码。
+		// Cuando el upstream rechaza solo devuelve un frame de fin, sin frame de contenido (medido: al ser rechazado, el raw es de solo 216
+		// bytes). En este caso hay que dar error: antes se trataba como respuesta vacía y se devolvía 200 + content:null,
+		// y el cliente no podía ver que la petición había fallado en realidad.
+		// Ojo: no se puede usar BardErrorInfo para detectar el error —— el frame de fin de una respuesta normal también lleva ese código.
 		return "", nil, res, fmt.Errorf("upstream returned no content frame (raw %d bytes)", len(res.Raw))
 	}
 	var toolCalls []ToolCall
 	if len(tools) > 0 {
-		text, toolCalls = parseToolCalls(text)
+		text, toolCalls = parseToolCalls(text, toolNameSet(tools))
 	}
 	return text, toolCalls, res, nil
 }
@@ -267,7 +294,8 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	prompt, latest := messagesToPrompt(messages, tools, req["tool_choice"])
+	toolChoice := effectiveToolChoice(req, tools, messages)
+	prompt, latest := messagesToPrompt(messages, tools, toolChoice, parallelToolCalls(req))
 	if strings.TrimSpace(prompt) == "" && len(images) == 0 {
 		writeJSON(w, 400, map[string]interface{}{"error": map[string]string{"message": "empty prompt"}})
 		return
@@ -282,41 +310,39 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	cid := "chatcmpl-" + randHex(12)
 	created := time.Now().Unix()
 
-	// 带 tools 时正文过一道围栏闸门：```tool_call``` 块要完整文本才能解析，
-	// 直接转发会把围栏原文推给客户端，所以只放行确定不在围栏里的部分。
-	// 思考链跟围栏无关，两种情况都直接流。
+	// Con tools se bufferea la respuesta completa en vez de emitir en streaming: el bloque
+	// ```tool_call``` necesita el texto entero para parsearse, y sobre todo hace falta poder
+	// validar/corregir/reintentar (tool_choice y argumentos) antes de enviar nada — una vez
+	// emitidos los bytes ya no se pueden retirar. El cuerpo se emite al final en el mismo formato
+	// SSE. Sin tools sí hay streaming real (cada frame del upstream se reenvía como delta).
 	var sse *sseWriter
-	var gate *toolFenceGate
 	var onDelta, onReasoning func(string)
 	if stream {
 		sse = newSSEWriter(w, cid, created, modelName)
 		onReasoning = sse.SendReasoning
 		if len(tools) == 0 {
 			onDelta = sse.SendContent
-		} else {
-			gate = newToolFenceGate(sse.SendContent)
-			onDelta = gate.Push
 		}
 	}
 
 	var text string
 	var toolCalls []ToolCall
 	var res *StreamResult
-	if rtCfg().MultiTurn && len(images) == 0 && modelCfg.Tool == 0 {
-		// 多轮：按历史前缀识别续接，命中就只发新消息、历史留服务端。带 tools 也走这条。
-		text, toolCalls, res, err = callGeminiConv(messages, modelCfg, tools, req["tool_choice"], onDelta, onReasoning)
+	if shouldUseConv(modelCfg, len(images) > 0, len(tools) > 0) {
+		// Multironda: se reconoce la continuación por el prefijo del historial; si coincide, solo se envían los mensajes nuevos y el historial se queda en el servidor. Con tools también va por aquí.
+		text, toolCalls, res, err = callGeminiConv(messages, modelCfg, tools, toolChoice, parallelToolCalls(req), onDelta, onReasoning)
 	} else {
-		text, toolCalls, res, err = callGemini(prompt, latest, modelCfg, tools, images, onDelta, onReasoning)
+		text, toolCalls, res, err = callGemini(prompt, latest, modelCfg, tools, toolChoice, images, onDelta, onReasoning)
 	}
 	if err != nil {
 		recordRequest("chat.completions", modelName, prompt, "", res, 502, err.Error(), stream)
 		if sse != nil && sse.Started() {
-			sse.Fail(err) // 已经开流，HTTP 状态码改不了了
+			sse.Fail(err) // el stream ya está abierto; el código de estado HTTP ya no se puede cambiar
 			return
 		}
 		if ptl, ok := err.(*PromptTooLongError); ok {
-			// 明确报 400 而不是发出去让上游把用户的问题截掉 —— 那样客户端拿到的是
-			// 一个答非所问的 200，根本看不出请求其实没送到。
+			// Se da 400 explícitamente en vez de dejar que el upstream recorte la pregunta del usuario —— así el cliente recibiría
+			// un 200 que responde a otra cosa y no podría ver que la petición no se envió.
 			writeJSON(w, 400, map[string]interface{}{"error": map[string]string{
 				"message": ptl.Error(), "type": "invalid_request_error",
 				"code": "context_length_exceeded"}})
@@ -334,14 +360,25 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Validación final: el reintento correctivo (tool_choice y argumentos) ya se intentó dentro
+	// de callGemini/callGeminiConv cuando se buffereó. Aquí solo queda registrar lo irresoluble.
+	if len(tools) > 0 {
+		for _, verr := range validateToolCalls(toolCalls, toolSchemas(tools)) {
+			logf("[tools] argumentos aún no válidos tras el reintento: %v", verr)
+		}
+		if toolChoiceUnsatisfied(toolChoice, toolCalls) {
+			logf("[tools] tool_choice sigue sin cumplirse (stream=%v)", stream)
+		}
+	}
+
 	msg := map[string]interface{}{"role": "assistant"}
 	if text != "" {
 		msg["content"] = text
 	} else {
 		msg["content"] = nil
 	}
-	// 思考链走 reasoning_content —— DeepSeek-R1 带起来的事实标准，newapi 和
-	// 主流客户端都认，会渲染成可折叠的「思考过程」。只有 3.1 Pro 有，其余为空。
+	// La cadena de pensamiento va por reasoning_content —— el estándar de facto que popularizó DeepSeek-R1; tanto newapi como
+	// los clientes principales lo reconocen y lo renderizan como «proceso de pensamiento» plegable. Solo lo tiene 3.1 Pro; el resto va vacío.
 	if res != nil && res.Reasoning != "" {
 		msg["reasoning_content"] = res.Reasoning
 	}
@@ -349,6 +386,11 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if len(toolCalls) > 0 {
 		msg["tool_calls"] = toolCalls
 		finish = "tool_calls"
+	} else if len(tools) > 0 && hasUnclosedToolFence(text) {
+		// El modelo intentó llamar a una herramienta pero la salida se cortó a mitad del bloque
+		// (no hay tool_call parseable). Se señaliza "length" para que el cliente sepa que puede
+		// continuar, en vez de "stop", que le haría creer que la respuesta está completa.
+		finish = "length"
 	}
 
 	recordRequest("chat.completions", modelName, prompt, text, res, 200, "", stream)
@@ -357,16 +399,16 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		if includeUsage {
 			usage = usageOf(prompt, text, res)
 		}
-		// 真流式已发出的不重发，只补尾巴；有 tools 时没走真流式，这里发全量。
-		// 思考链同理，且要在正文之前补——保持「先思考后回答」的顺序。
+		// La cadena de pensamiento debe completarse antes del cuerpo, para mantener el orden
+		// «primero pensar, luego responder».
 		if res != nil && res.Reasoning != "" {
 			if rest := remainingOf(res.Reasoning, res.EmittedReasoning); rest != "" {
 				sse.SendReasoning(rest)
 			}
 		}
-		// 补尾巴要跟**实际发给客户端的内容**比。走了闸门时 res.Emitted 含围栏
-		// 原文，拿它比前缀会对不上，尾巴会整段丢掉。
-		if rest := remainingOf(text, sentText(res, gate)); rest != "" {
+		// Sin herramientas hubo streaming real: aquí solo queda la cola. Con herramientas se
+		// buffereó (Emitted vacío), así que se envía el cuerpo completo.
+		if rest := remainingOf(text, res.Emitted); rest != "" {
 			sse.SendContent(rest)
 		}
 		if len(toolCalls) > 0 {
@@ -408,20 +450,7 @@ func remainingText(text string, res *StreamResult) string {
 	return remainingOf(text, res.Emitted)
 }
 
-// sentText 返回本次实际发给客户端的正文。
-// 没走围栏闸门时就是 deltaTracker 发出的那些；走了闸门时以闸门为准 ——
-// 闸门扣掉了围栏，跟 res.Emitted 不是同一份文本。
-func sentText(res *StreamResult, gate *toolFenceGate) string {
-	if gate != nil {
-		return gate.Sent()
-	}
-	if res == nil {
-		return ""
-	}
-	return res.Emitted
-}
-
-// remainingOf 返回 full 里还没发出去的尾巴。emitted 为空时返回全文。
+// remainingOf devuelve la cola de full que aún no se ha enviado. Si emitted está vacío, devuelve el texto completo.
 func remainingOf(full, emitted string) string {
 	if emitted == "" {
 		return full
@@ -475,7 +504,7 @@ func handleResponses(w http.ResponseWriter, r *http.Request) {
 						"role":         "tool",
 						"tool_call_id": getStr(item, "call_id"),
 						"name":         getStr(item, "name"),
-						"content":      getStr(item, "output"),
+						"content":      valueToString(item["output"]),
 					})
 					continue
 				}
@@ -565,7 +594,8 @@ func handleResponses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	prompt, latest := messagesToPrompt(messages, tools, req["tool_choice"])
+	toolChoice := effectiveToolChoice(req, tools, messages)
+	prompt, latest := messagesToPrompt(messages, tools, toolChoice, parallelToolCalls(req))
 	if strings.TrimSpace(prompt) == "" && len(images) == 0 {
 		writeJSON(w, 400, map[string]interface{}{"error": map[string]string{"message": "empty input"}})
 		return
@@ -575,25 +605,25 @@ func handleResponses(w http.ResponseWriter, r *http.Request) {
 	rid := "resp_" + randHex(16)
 	mid := "msg_" + randHex(12)
 
-	// Responses 流式协议要求先 response.output_item.added 声明 item，才能对它发
-	// output_text.delta；漏了 Codex 这类严格客户端会报 "OutputTextDelta without active
-	// item"。msgIndex/nextIdx 给每个 output item 分配序号，ensureMsg 惰性声明 message
-	// item（首个 delta 时才发，纯工具调用轮不发空 message）。
+	// El protocolo de streaming de Responses exige declarar primero el item con response.output_item.added para poder enviarle
+	// output_text.delta; si falta, clientes estrictos como Codex reportan "OutputTextDelta without active
+	// item". msgIndex/nextIdx asignan un número a cada output item; ensureMsg declara el item message de forma perezosa
+	// (solo se envía en el primer delta; en una ronda de solo llamadas a herramienta no se envía un message vacío).
 	msgIndex := -1
 	nextIdx := 0
 	var ensureMsg func()
 
-	// 流式要先把头和 response.created 发出去，才能边收边推 delta。
-	// 代价是一旦开了流 HTTP 状态码就改不了了，上游失败只能用 response.failed
-	// 事件告知 —— 跟 /v1/chat/completions 那条路的取舍一致。
+	// En streaming hay que enviar primero la cabecera y response.created para poder ir empujando delta mientras se recibe.
+	// El coste es que, una vez abierto el stream, el código de estado HTTP ya no se puede cambiar; un fallo del upstream solo se puede comunicar
+	// con el evento response.failed —— el mismo compromiso que en la ruta /v1/chat/completions.
 	var writeEvent func(string, interface{})
 	var emitDelta func(string)
-	var gate *toolFenceGate
+	var emitFunctionCall func(map[string]interface{})
 	var onDelta func(string)
 	if stream {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
-		w.Header().Set("X-Accel-Buffering", "no") // 关掉反代对 SSE 的缓冲，见 sse.go
+		w.Header().Set("X-Accel-Buffering", "no") // desactiva el búfer del reverse proxy para SSE; véase sse.go
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.WriteHeader(200)
 		flusher, _ := w.(http.Flusher)
@@ -644,24 +674,42 @@ func handleResponses(w http.ResponseWriter, r *http.Request) {
 				"delta":         d,
 			})
 		}
-		// 跟 chat 那条路同一套围栏闸门：带 tools 时只放行确定不在围栏里的部分。
+		// emitFunctionCall emite el ciclo added → arguments.done → item.done de una llamada.
+		// Se invoca en cuanto la compuerta cierra el bloque (streaming incremental) y también
+		// como red de seguridad al final para lo que ella no hubiera cubierto.
+		emitFunctionCall = func(item map[string]interface{}) {
+			idx := nextIdx
+			nextIdx++
+			writeEvent("response.output_item.added", map[string]interface{}{
+				"type": "response.output_item.added", "output_index": idx, "item": item,
+			})
+			writeEvent("response.function_call_arguments.done", map[string]interface{}{
+				"type":      "response.function_call_arguments.done",
+				"item_id":   item["id"],
+				"call_id":   item["call_id"],
+				"name":      item["name"],
+				"arguments": item["arguments"],
+			})
+			writeEvent("response.output_item.done", map[string]interface{}{
+				"type": "response.output_item.done", "output_index": idx, "item": item,
+			})
+		}
+		// Con tools se bufferea la respuesta (igual que en la ruta chat) para poder validar,
+		// corregir y reintentar antes de emitir; los eventos de la función se emiten al final.
 		if len(tools) == 0 {
 			onDelta = emitDelta
-		} else {
-			gate = newToolFenceGate(emitDelta)
-			onDelta = gate.Push
 		}
 	}
 
-	// onReasoning 传 nil：Responses API 有自己的 reasoning 事件形状，跟 chat 的
-	// reasoning_content 不通用，这条路目前不暴露思考链。
+	// onReasoning se pasa nil: la API Responses tiene su propia forma de eventos reasoning, que no es compatible con el
+	// reasoning_content de chat; por ahora esta ruta no expone la cadena de pensamiento.
 	var text string
 	var toolCalls []ToolCall
 	var res *StreamResult
-	if rtCfg().MultiTurn && len(images) == 0 && modelCfg.Tool == 0 {
-		text, toolCalls, res, err = callGeminiConv(messages, modelCfg, tools, req["tool_choice"], onDelta, nil)
+	if shouldUseConv(modelCfg, len(images) > 0, len(tools) > 0) {
+		text, toolCalls, res, err = callGeminiConv(messages, modelCfg, tools, toolChoice, parallelToolCalls(req), onDelta, nil)
 	} else {
-		text, toolCalls, res, err = callGemini(prompt, latest, modelCfg, tools, images, onDelta, nil)
+		text, toolCalls, res, err = callGemini(prompt, latest, modelCfg, tools, toolChoice, images, onDelta, nil)
 	}
 	if err != nil {
 		recordRequest("responses", modelName, prompt, "", res, 502, err.Error(), stream)
@@ -698,6 +746,16 @@ func handleResponses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Validación final (el reintento correctivo ya se intentó dentro de callGemini/callGeminiConv).
+	if len(tools) > 0 {
+		for _, verr := range validateToolCalls(toolCalls, toolSchemas(tools)) {
+			logf("[tools] argumentos aún no válidos tras el reintento: %v", verr)
+		}
+		if toolChoiceUnsatisfied(toolChoice, toolCalls) {
+			logf("[tools] tool_choice sigue sin cumplirse (responses, stream=%v)", stream)
+		}
+	}
+
 	var output []map[string]interface{}
 	for _, tc := range toolCalls {
 		output = append(output, map[string]interface{}{
@@ -723,33 +781,29 @@ func handleResponses(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	// Salida cortada a mitad de un bloque tool_call sin llamada parseable: se marca incompleta
+	// para que Codex sepa que puede continuar, en vez de "completed" sin tool_calls.
+	incomplete := len(toolCalls) == 0 && len(tools) > 0 && hasUnclosedToolFence(text)
+	respStatus := "completed"
+	if incomplete {
+		respStatus = "incomplete"
+	}
+
 	recordRequest("responses", modelName, prompt, text, res, 200, "", stream)
 	if stream {
-		// 补上闸门扣住、或前缀 diff 跳过的尾巴，再发终态事件。
-		if rest := remainingOf(text, sentText(res, gate)); rest != "" {
-			emitDelta(rest)
-		}
+		// Se emiten los items en el mismo orden que el array `output` para que los índices cuadren.
+		// Sin herramientas hubo streaming real, así que del mensaje solo queda la cola (Emitted);
+		// con herramientas se buffereó y se envía el cuerpo completo.
 		for _, item := range output {
 			switch item["type"] {
 			case "function_call":
-				// 工具调用 item 也要 added → done 包起来，Codex 才认。
-				idx := nextIdx
-				nextIdx++
-				writeEvent("response.output_item.added", map[string]interface{}{
-					"type": "response.output_item.added", "output_index": idx, "item": item,
-				})
-				writeEvent("response.function_call_arguments.done", map[string]interface{}{
-					"type":      "response.function_call_arguments.done",
-					"item_id":   item["id"],
-					"call_id":   item["call_id"],
-					"name":      item["name"],
-					"arguments": item["arguments"],
-				})
-				writeEvent("response.output_item.done", map[string]interface{}{
-					"type": "response.output_item.done", "output_index": idx, "item": item,
-				})
+				// El item de llamada a herramienta también debe envolverse con added → done para que Codex lo reconozca.
+				emitFunctionCall(item)
 			case "message":
-				ensureMsg() // 没有 delta 但有正文时，这里补声明 message item
+				ensureMsg() // si no hubo delta pero sí cuerpo, aquí se completa la declaración del message item
+				if rest := remainingOf(text, res.Emitted); rest != "" {
+					emitDelta(rest)
+				}
 				if cps, ok := item["content"].([]map[string]interface{}); ok {
 					for ci, cp := range cps {
 						writeEvent("response.output_text.done", map[string]interface{}{
@@ -774,10 +828,13 @@ func handleResponses(w http.ResponseWriter, r *http.Request) {
 		respObj := map[string]interface{}{
 			"id":     rid,
 			"object": "response",
-			"status": "completed",
+			"status": respStatus,
 			"model":  modelName,
 			"output": output,
 			"usage":  buildUsage(prompt, text, true),
+		}
+		if incomplete {
+			respObj["incomplete_details"] = map[string]interface{}{"reason": "max_output_tokens"}
 		}
 		writeEvent("response.completed", map[string]interface{}{
 			"type":     "response.completed",
@@ -786,13 +843,17 @@ func handleResponses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, 200, map[string]interface{}{
+	respOut := map[string]interface{}{
 		"id":         rid,
 		"object":     "response",
 		"created_at": time.Now().Unix(),
-		"status":     "completed",
+		"status":     respStatus,
 		"model":      modelName,
 		"output":     output,
 		"usage":      buildUsage(prompt, text, true),
-	})
+	}
+	if incomplete {
+		respOut["incomplete_details"] = map[string]interface{}{"reason": "max_output_tokens"}
+	}
+	writeJSON(w, 200, respOut)
 }

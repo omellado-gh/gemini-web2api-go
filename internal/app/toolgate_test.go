@@ -127,11 +127,85 @@ func TestPartialPrefixLen(t *testing.T) {
 		{"abc```", 3},
 		{"abc```tool_c", 9},
 		{"", 0},
-		{"中文`", 1}, // 切点必须落在 ASCII 上，不能劈开多字节字符
+		{"中文`", 1}, // el punto de corte debe caer en ASCII; no debe partir un carácter multibyte
 		{"中文", 0},
 	} {
 		if got := partialPrefixLen(c.s, m); got != c.want {
-			t.Errorf("partialPrefixLen(%q) = %d，期望 %d", c.s, got, c.want)
+			t.Errorf("partialPrefixLen(%q) = %d, se esperaba %d", c.s, got, c.want)
 		}
+	}
+}
+
+// La compuerta debe emitir la tool_call en cuanto se cierra el bloque, con índice
+// incremental y sin enviar el fence como texto.
+func TestToolFenceGateEmitsToolCalls(t *testing.T) {
+	type emitted struct {
+		idx  int
+		name string
+		args string
+	}
+	var got []emitted
+	full := "vamos\n```tool_call\n{\"name\": \"run_command\", \"arguments\": {\"command\": \"ls\"}}\n```\nlisto"
+	g := newToolFenceGate(func(string) {})
+	g.known = map[string]bool{"run_command": true}
+	g.onTool = func(i int, tc ToolCall) {
+		got = append(got, emitted{i, tc.Function.Name, tc.Function.Arguments})
+	}
+	for _, c := range chars(full) {
+		g.Push(c)
+	}
+	if len(got) != 1 || got[0].idx != 0 || got[0].name != "run_command" || !strings.Contains(got[0].args, "ls") {
+		t.Fatalf("emisión incorrecta: %+v", got)
+	}
+	if g.ToolCallCount() != 1 {
+		t.Fatalf("ToolCallCount = %d, se esperaba 1", g.ToolCallCount())
+	}
+	if strings.Contains(g.Sent(), "tool_call") {
+		t.Errorf("el fence no debería enviarse como texto: %q", g.Sent())
+	}
+}
+
+func TestToolFenceGateEmitsMultipleIndexed(t *testing.T) {
+	var idxs []int
+	full := "```tool_call\n{\"name\":\"a\",\"arguments\":{}}\n```\n```tool_call\n{\"name\":\"b\",\"arguments\":{}}\n```"
+	g := newToolFenceGate(func(string) {})
+	g.onTool = func(i int, tc ToolCall) { idxs = append(idxs, i) }
+	for _, c := range chars(full) {
+		g.Push(c)
+	}
+	if len(idxs) != 2 || idxs[0] != 0 || idxs[1] != 1 {
+		t.Fatalf("índices incorrectos: %+v", idxs)
+	}
+}
+
+// Un bloque no interpretable no produce llamada y se conserva como texto (no se pierde).
+func TestToolFenceGateInvalidKeepsText(t *testing.T) {
+	g := newToolFenceGate(func(string) {})
+	g.onTool = func(int, ToolCall) { t.Error("no debería emitir una llamada inválida") }
+	for _, c := range chars("```tool_call\n{roto}\n```") {
+		g.Push(c)
+	}
+	if g.ToolCallCount() != 0 {
+		t.Errorf("ToolCallCount = %d, se esperaba 0", g.ToolCallCount())
+	}
+	if !strings.Contains(g.Sent(), "tool_call") {
+		t.Errorf("un bloque inválido debe conservarse como texto: %q", g.Sent())
+	}
+}
+
+// Con nombres declarados, una herramienta no declarada se EMITE igualmente (no se degrada a texto).
+func TestToolFenceGateUnknownNameStillEmitted(t *testing.T) {
+	emitted := false
+	g := newToolFenceGate(func(string) {})
+	g.known = map[string]bool{"run_command": true}
+	g.onTool = func(_ int, tc ToolCall) { emitted = tc.Function.Name == "otra" }
+	for _, c := range chars("```tool_call\n{\"name\":\"otra\",\"arguments\":{}}\n```") {
+		g.Push(c)
+	}
+	if !emitted {
+		t.Error("una herramienta no declarada debe emitirse igualmente")
+	}
+	if strings.Contains(g.Sent(), "tool_call") {
+		t.Errorf("el bloque no debería enviarse como texto: %q", g.Sent())
 	}
 }

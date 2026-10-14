@@ -902,74 +902,74 @@ async function loadReqs() {
   }
 }
 
-// ── 运行时配置 ───────────────────────────────────────────────────────────────
-// 字段定义跟后端 RuntimeConfig 一一对应；范围与后端 validateRuntimeConfig 一致，
-// 前端只做提示，真正的校验在后端（浏览器里的限制随便绕）。
-// 必须一一对应：saveRtCfg 只按这里的字段拼 PUT body，后端整体反序列化，漏在这里
-// 列出的 RuntimeConfig 字段每次保存都会被解成零值冲掉（multi_turn 栽过，见 #27）。
-// 按语义分组，组内自适应多列。分组的依据是"改这一项时在想什么"：
-// 调产能 / 调容错 / 调怎么发请求 / 调留多少数据，而不是按字段类型堆在一起。
+// ── Configuración en tiempo de ejecución ───────────────────────────────────────────────────────────────
+// Las definiciones de campo se corresponden una a una con el RuntimeConfig del backend; los rangos coinciden con validateRuntimeConfig del backend,
+// el frontend solo sirve de pista; la validación real está en el backend (los límites del navegador se saltan con facilidad).
+// Deben corresponderse una a una: saveRtCfg arma el body del PUT solo con los campos de aquí y el backend deserializa el conjunto; si falta aquí
+// algún campo de RuntimeConfig, cada guardado lo decodifica como valor cero y lo pisa (ya pasó con multi_turn, ver #27).
+// Se agrupa por semántica, con varias columnas adaptativas dentro de cada grupo. El criterio de agrupación es "en qué se piensa al cambiar esta opción":
+// ajustar capacidad / ajustar tolerancia a fallos / ajustar cómo se envían las peticiones / ajustar cuántos datos se conservan, en lugar de amontonarlos por tipo de campo.
 const RT_GROUPS = [
   {
-    title: '流量控制 · 每个 IP slot 独立计数',
+    title: 'Limitación de tráfico · contabilizado por slot de IP',
     fields: [
-      { k: 'per_ip_concurrent', label: '并发', type: 'int', min: 0, max: 1000,
-        hint: '同一时刻最多几个请求在飞，0=不限' },
+      { k: 'per_ip_concurrent', label: 'Concurrencia', type: 'int', min: 0, max: 1000,
+        hint: 'Máximo de peticiones en vuelo a la vez; 0 = sin límite' },
       { k: 'per_ip_rpm', label: 'RPM', type: 'int', min: 0, max: 10000,
-        hint: '滚动 60 秒窗口上限，0=不限' },
+        hint: 'Límite de la ventana móvil de 60 segundos; 0 = sin límite' },
       { k: 'per_ip_rph', label: 'RPH', type: 'int', min: 0, max: 100000,
-        hint: '滚动 1 小时上限，0=不限。实测单出口 80-180 次被拦，默认取下沿 80。按低速率跑可以调高很多——10 次/分钟连打 800 次没被拦过' },
+        hint: 'Límite de la ventana móvil de 1 hora; 0 = sin límite. En pruebas una sola salida fue bloqueada entre 80 y 180 peticiones, así que el valor por defecto toma el límite inferior de 80. A baja velocidad se puede subir mucho más — 800 peticiones seguidas a 10 por minuto nunca fueron bloqueadas' },
     ],
   },
   {
-    title: '重试与超时',
+    title: 'Reintentos y tiempos de espera',
     fields: [
-      { k: 'retry_attempts', label: '重试次数', type: 'int', min: 1, max: 10,
-        hint: '含首次；流式已吐字后不再重试' },
-      { k: 'retry_delay_sec', label: '重试间隔（秒）', type: 'int', min: 0, max: 60 },
-      { k: 'request_timeout_sec', label: '上游超时（秒）', type: 'int', min: 5, max: 600 },
+      { k: 'retry_attempts', label: 'Número de reintentos', type: 'int', min: 1, max: 10,
+        hint: 'Incluye el primer intento; si el streaming ya ha emitido texto, no se reintenta' },
+      { k: 'retry_delay_sec', label: 'Intervalo entre reintentos (s)', type: 'int', min: 0, max: 60 },
+      { k: 'request_timeout_sec', label: 'Tiempo de espera del upstream (s)', type: 'int', min: 5, max: 600 },
     ],
   },
   {
-    title: '请求行为',
+    title: 'Comportamiento de las peticiones',
     fields: [
-      { k: 'default_model', label: '默认模型', type: 'select',
-        hint: '客户端没传 model 时用哪个' },
-      { k: 'max_prompt_bytes', label: 'Prompt 字节上限', type: 'int', min: 0, max: 10000000,
-        hint: '超了直接返回 400 context_length_exceeded。上游的墙实测在约 13 万 UTF-8 字节，按字节算跟语言无关（同字节数下中英文表现一致，而 token 数差 1.9 倍）。不拦的话上游从尾部静默截断，被吃掉的正是刚问的那句。0=不限' },
-      { k: 'impersonate', label: 'TLS 指纹', type: 'text',
+      { k: 'default_model', label: 'Modelo predeterminado', type: 'select',
+        hint: 'Cuál usar cuando el cliente no envía model' },
+      { k: 'max_prompt_bytes', label: 'Límite de bytes del prompt', type: 'int', min: 0, max: 10000000,
+        hint: 'Si se supera, devuelve 400 context_length_exceeded directamente. El muro del upstream está medido en unos 130.000 bytes UTF-8; contado por bytes es independiente del idioma (chino e inglés se comportan igual con el mismo número de bytes, aunque el número de tokens difiere 1,9 veces). Si no se bloquea, el upstream trunca en silencio por la cola, y lo que se come es justo la frase que se acaba de preguntar. 0 = sin límite' },
+      { k: 'impersonate', label: 'Huella TLS', type: 'text',
         hint: 'chrome_146 / chrome_144 / firefox_147 / safari_16_0 …' },
-      { k: 'gemini_bl', label: 'Gemini bl 版本', type: 'text',
-        hint: '上游前端版本号。请求大面积失败时先看这里是不是过期了' },
-      { k: 'gemini_bl_auto', label: '自动跟随 bl 版本', type: 'bool',
-        hint: '每 6 小时从 /app 页面抓一次最新版本号，抓到就用抓到的。抓不到或格式不对就继续用上面钉的值' },
-      { k: 'auto_delete_conversation', label: '自动删网页会话', type: 'bool',
-        hint: '出完结果自动删掉 gemini.google.com 上留下的这条会话，免得登录号里堆一堆。只登录态生效，异步 best-effort，删失败不影响响应' },
-      { k: 'temporary_chat', label: '临时对话', type: 'bool',
-        hint: '走网页端原生「临时对话」（inner[45]=1）：会话压根不进账号的会话列表、不用于训练，比「自动删网页会话」更干净，还省掉那次删除请求。只登录态有意义；开了「服务端多轮续接」时不生效（临时对话不留列表，多轮要靠服务端留会话）' },
-      { k: 'multi_turn', label: '服务端多轮续接', type: 'bool',
-        hint: '走 Gemini 原生服务端多轮：按历史前缀认出这是上一轮的续接，命中就只发最新一句、历史留在服务端，同一串对话复用同一个 gemini 会话（不再每发一条就新开一个）。匿名/登录都行，带图或带工具时不生效。首轮/重启/改历史会退回整段重发。默认关' },
-      { k: 'anon_first', label: '匿名优先', type: 'bool',
-        hint: '这次请求不需要登录态能力时（纯文本、非思考、无工具、不带图）走匿名、不占用 cookie 账号，省账号额度；用到 3.1 Pro / 3.8 Flash / 扩展思考 / 生图 / 传文件这些才挑号。关掉则只要池里有号就一律用号（默认关）' },
+      { k: 'gemini_bl', label: 'Versión de Gemini bl', type: 'text',
+        hint: 'Número de versión del frontend del upstream. Cuando las peticiones fallen en masa, mira aquí primero si ha caducado' },
+      { k: 'gemini_bl_auto', label: 'Seguir automáticamente la versión de bl', type: 'bool',
+        hint: 'Obtiene el último número de versión de la página /app cada 6 horas y lo usa si lo consigue. Si no lo consigue o el formato es incorrecto, sigue usando el valor fijado arriba' },
+      { k: 'auto_delete_conversation', label: 'Eliminar automáticamente la conversación web', type: 'bool',
+        hint: 'Al terminar el resultado, elimina automáticamente la conversación que queda en gemini.google.com, para que no se acumulen en la cuenta. Solo aplica con sesión iniciada, asíncrono best-effort; si el borrado falla, no afecta a la respuesta' },
+      { k: 'multi_turn', label: 'Continuación multiturno del lado del servidor', type: 'bool',
+        hint: 'Usa el multiturno nativo del servidor de Gemini: reconoce por el prefijo del historial que es una continuación del turno anterior y, si acierta, envía solo la última frase y deja el historial en el servidor, reutilizando la misma conversación de Gemini para la misma cadena (en vez de abrir una nueva con cada mensaje). Funciona anónimo y con sesión; no aplica con imágenes ni herramientas. El primer turno, un reinicio o un cambio de historial vuelven a reenviar todo. Desactivado por defecto' },
+      { k: 'anon_first', label: 'Anónimo primero', type: 'bool',
+        hint: 'Cuando esta petición no necesita capacidades de sesión (solo texto, sin pensamiento, sin herramientas, sin imágenes), va como anónimo y no ocupa una cuenta con cookie, ahorrando cuota de cuenta; solo se elige cuenta para 3.1 Pro / 3.8 Flash / pensamiento extendido / generación de imágenes / subida de archivos. Si se desactiva, siempre que haya cuentas en el pool se usan (desactivado por defecto)' },
+      { k: 'force_tool_first_turn', label: 'Forzar herramientas en el primer turno', type: 'bool',
+        hint: 'En el primer turno de una sesión con herramientas y con tool_choice automático o ausente, lo eleva a obligatorio para que el modelo empiece a actuar (listar/leer) en vez de responder en prosa. Útil con modelos débiles; desactivado por defecto' },
     ],
   },
   {
-    title: '代理与 cookie 的降级行为',
+    title: 'Comportamiento de degradación de proxy y cookie',
     fields: [
-      { k: 'proxy_cooldown_min', label: '熔断冷却（分钟）', type: 'int', min: 0, max: 10080,
-        hint: '代理连续失败 5 次后歇多久再放回池子。实测被拦的出口 106-121 分钟自恢复，默认 120；0=不恢复，要去代理池页面手动重置' },
-      { k: 'fallback_direct', label: '无可用代理时退回直连', type: 'bool',
-        hint: '关：直接返回 429，本机 IP 不会暴露给上游（默认）。开：可用性优先，但上游会看到本机真实出口' },
-      { k: 'fallback_anon', label: 'cookie 失效时降级匿名', type: 'bool',
-        hint: '关：直接报错，能立刻发现该换号了（默认）。开：继续跑，但 3.1 Pro 会被静默降级成 3.5 Flash-Lite、思考链消失，客户端看不出来' },
+      { k: 'proxy_cooldown_min', label: 'Enfriamiento del circuito (min)', type: 'int', min: 0, max: 10080,
+        hint: 'Cuánto descansa un proxy antes de volver al pool tras 5 fallos consecutivos. En pruebas las salidas bloqueadas se recuperan solas a los 106-121 minutos, así que el valor por defecto es 120; 0 = sin recuperación automática, hay que restablecerlo a mano en la página del pool de proxies' },
+      { k: 'fallback_direct', label: 'Volver a conexión directa cuando no haya proxy disponible', type: 'bool',
+        hint: 'Off: devuelve 429 directamente y la IP del host nunca se expone al upstream (por defecto). On: prioriza la disponibilidad, pero el upstream ve la salida real del host' },
+      { k: 'fallback_anon', label: 'Degradar a anónimo cuando falla la cookie', type: 'bool',
+        hint: 'Off: da error directamente, para que veas al instante que toca cambiar de cuenta (por defecto). On: sigue funcionando, pero 3.1 Pro se degrada en silencio a 3.5 Flash-Lite y la cadena de pensamiento desaparece, sin que el cliente lo note' },
     ],
   },
   {
-    title: '数据与日志',
+    title: 'Datos y registros',
     fields: [
-      { k: 'retention_days', label: '明细保留（天）', type: 'int', min: 1, max: 3650,
-        hint: '过期只删明细，聚合数据永久保留' },
-      { k: 'log_requests', label: '打印请求日志', type: 'bool' },
+      { k: 'retention_days', label: 'Retención de detalles (días)', type: 'int', min: 1, max: 3650,
+        hint: 'Al caducar solo se borran los detalles; los datos agregados se conservan para siempre' },
+      { k: 'log_requests', label: 'Imprimir registro de peticiones', type: 'bool' },
     ],
   },
 ];
