@@ -6,42 +6,43 @@ import (
 	"time"
 )
 
-// bl 是上游前端的构建版本号，形如 boq_gemini-web-uiserver_20261007.01_p0，
-// 每个 StreamGenerate 请求都要带。它埋在 /app 页面 HTML 的 "cfb2h" 字段里。
-// （2026-10 上游把服务名从 assistant-bard-web-server 改成了 gemini-web-uiserver，
-// 新旧两个值实测都还能用；校验正则已放宽不钉服务名，见 blValueRe。）
+// bl es el número de versión de compilación del frontend upstream, con la forma boq_gemini-web-uiserver_20261007.01_p0,
+// que cada petición StreamGenerate debe llevar. Está incrustado en el campo "cfb2h" del HTML de la página /app.
+// (en 2026-10 el upstream cambió el nombre del servicio de assistant-bard-web-server a gemini-web-uiserver,
+// los valores viejo y nuevo siguen sirviendo según pruebas; la regex de validación se relajó para no fijar el nombre del servicio, ver blValueRe.)
 //
-// 钉死一个值是能用的 —— 实测落后好几个月的旧值仍然正常。但"仍然可用"不等于"永远可用"，
-// 而这个值一旦被上游弃用，表现是所有请求大面积失败，排查时很难第一时间想到
-// 是个版本号过期了。既然 xsrf.go 本来就在抓 /app 页面，顺手取一下成本几乎为零。
+// Fijar un valor funciona —— un valor viejo con varios meses de retraso sigue siendo válido. Pero "sigue siendo válido" no equivale a "válido para siempre",
+// y si el upstream deja de usar este valor, el síntoma es que todas las peticiones fallan en masa, y al depurar es difícil pensar de entrada
+// que se trata de un número de versión caducado. Como xsrf.go ya descarga la página /app, obtenerlo de paso cuesta casi nada.
 var (
 	blMu       sync.RWMutex
-	blFetched  string    // 抓到的最新值，空表示还没抓到
-	blFetchAt  time.Time // 上次抓取尝试的时间（成功失败都记，避免失败时疯狂重试）
-	blFetching bool      // 有一次抓取正在飞
+	blFetched  string    // último valor obtenido; vacío significa que aún no se ha obtenido
+	blFetchAt  time.Time // hora del último intento de obtención (se registra éxito y fallo, para evitar reintentos desmedidos tras un fallo)
+	blFetching bool      // hay una obtención en curso
 )
 
-// bl 变化的粒度是天，隔几小时看一眼足够。
+// la granularidad de cambio de bl es de días; mirarlo cada pocas horas es suficiente.
 const blTTL = 6 * time.Hour
 
 var cfb2hRe = regexp.MustCompile(`"cfb2h":"([^"]{10,120})"`)
 
-// blValueRe 卡住形状：boq_<服务名>_<8位日期>.<2位>_p<数字>。
-// 页面上的 cfb2h 理论上就是这个格式，但它是外部输入，直接拿去拼 URL 等于让
-// 上游页面决定我们发什么请求。形状对不上就当没抓到，继续用配置里钉的值 ——
-// 宁可落后，不可乱发。
+// blValueRe fija la forma: boq_<nombre de servicio>_<fecha de 8 dígitos>.<2 dígitos>_p<número>.
+// El cfb2h de la página en teoría tiene este formato, pero es una entrada externa; usarlo
+// directamente para componer la URL equivale a dejar que la página del upstream decida qué petición enviamos.
+// Si la forma no coincide, se trata como no obtenido y se sigue usando el valor fijado en la configuración ——
+// mejor quedarse atrás que enviar cualquier cosa.
 //
-// 服务名那段不钉死（原来钉的是 assistant-bard-web-server）：2026-10 上游把服务
-// 改名成 gemini-web-uiserver，钉死服务名会让自动跟随把新值当"形状不对"拒掉，于是
-// 永远回退到配置里那个旧值。只校验 boq_ 前缀 + 日期.版本_p 后缀这个总体形状，
-// 服务名随它改——够挡住抓错的垃圾，又扛得住改名。
+// El nombre de servicio no se fija (antes se fijaba assistant-bard-web-server): en 2026-10 el upstream
+// renombró el servicio a gemini-web-uiserver; fijar el nombre haría que el seguimiento automático tratara el valor nuevo como "forma incorrecta"
+// y lo rechazara, volviendo siempre al valor viejo de la configuración. Solo se valida la forma general prefijo boq_ + sufijo fecha.versión_p;
+// el nombre de servicio puede cambiar —— basta para bloquear basura mal capturada y resiste un cambio de nombre.
 var blValueRe = regexp.MustCompile(`^boq_[a-z0-9-]+_\d{8}\.\d{2}_p\d+$`)
 
-// currentBL 返回这次请求该用的 bl。
+// currentBL devuelve el bl que debe usar esta petición.
 //
-// 不阻塞：过期时只是踢一次后台抓取，本次仍返回当前值。bl 是缓慢变化的版本号，
-// 用旧值最多是落后几个版本（实测落后两个多月仍可用），不值得为它给每个请求
-// 加一次页面抓取的延迟。auto 关掉时永远用配置里的值。
+// No bloquea: al caducar solo lanza una obtención en segundo plano y esta vez sigue devolviendo el valor actual. bl es un número de versión que cambia lentamente,
+// usar el valor viejo implica como mucho quedarse unas versiones atrás (con más de dos meses de retraso sigue sirviendo en pruebas), y no vale la pena añadirle a cada petición
+// la latencia de obtener la página por él. Con auto desactivado se usa siempre el valor de la configuración.
 func currentBL(proxyURL string) string {
 	pinned := rtCfg().GeminiBL
 	if !rtCfg().GeminiBLAuto {
@@ -54,7 +55,7 @@ func currentBL(proxyURL string) string {
 
 	if !inflight && time.Since(fetchedAt) > blTTL {
 		blMu.Lock()
-		// 双检：并发请求下只放一个 goroutine 去抓。
+		// Doble comprobación: bajo peticiones concurrentes solo se deja que un goroutine obtenga.
 		if !blFetching && time.Since(blFetchAt) > blTTL {
 			blFetching = true
 			go refreshBL(proxyURL)
@@ -68,28 +69,28 @@ func currentBL(proxyURL string) string {
 	return pinned
 }
 
-// refreshBL 抓一次 /app 把 cfb2h 取出来。匿名抓即可，这个值跟登录态无关。
+// refreshBL obtiene una vez /app para extraer cfb2h. Basta con una obtención anónima; este valor no depende del estado de sesión.
 func refreshBL(proxyURL string) {
 	defer func() {
 		blMu.Lock()
 		blFetching = false
-		blFetchAt = time.Now() // 成功失败都记，失败时也要等满 TTL 再试
+		blFetchAt = time.Now() // se registra éxito y fallo; tras un fallo también hay que esperar el TTL completo antes de reintentar
 		blMu.Unlock()
 	}()
 
 	body, err := fetchAppPage("", proxyURL)
 	if err != nil {
-		logf("[bl] 抓 /app 失败，继续用当前值: %v", err)
+		logf("[bl] fallo al obtener /app, se sigue usando el valor actual: %v", err)
 		return
 	}
 	m := cfb2hRe.FindSubmatch(body)
 	if m == nil {
-		logf("[bl] 页面里没有 cfb2h，继续用当前值")
+		logf("[bl] no hay cfb2h en la página, se sigue usando el valor actual")
 		return
 	}
 	got := string(m[1])
 	if !blValueRe.MatchString(got) {
-		logf("[bl] 抓到的值形状不对，忽略: %q", truncate(got, 60))
+		logf("[bl] la forma del valor obtenido es incorrecta, se ignora: %q", truncate(got, 60))
 		return
 	}
 
@@ -98,6 +99,6 @@ func refreshBL(proxyURL string) {
 	blFetched = got
 	blMu.Unlock()
 	if changed {
-		logf("[bl] 更新为 %s（配置里钉的是 %s）", got, rtCfg().GeminiBL)
+		logf("[bl] actualizado a %s (en la configuración está fijado %s)", got, rtCfg().GeminiBL)
 	}
 }

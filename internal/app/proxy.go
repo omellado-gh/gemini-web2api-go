@@ -28,21 +28,25 @@ var (
 	proxyCursor uint64
 )
 
-// loadProxies 从 DB 刷新内存里的代理列表。
+// loadProxies refresca en memoria la lista de proxies desde la DB.
 //
-// 读一半失败时**保留上一次的池子**，绝不用半截结果覆盖。
-// 旧写法有两个静默失效点：Scan 出错 continue（悄悄漏掉一个代理）、rows.Err()
-// 完全不查（遍历中断当成正常读完）。两者都会让 proxyCache 变短甚至变空，而
-// acquireSlot 用 len(proxyCache)==0 判断"没配代理池"，于是**池子一空就退回直连**
-// —— 部署者的真实 IP 直接暴露给上游，日志上只看到偶发的直连请求。
+// Si la lectura falla a mitad, **conserva el pool anterior**; nunca lo sobrescribe con
+// un resultado parcial. La versión antigua tenía dos puntos de fallo silenciosos: si
+// Scan daba error hacía continue (se saltaba un proxy sin avisar) y rows.Err() no se
+// consultaba en absoluto (una iteración interrumpida se tomaba como lectura completa).
+// Ambos acortaban o vaciaban proxyCache, y acquireSlot usa len(proxyCache)==0 para
+// decidir "no hay pool de proxies", así que **un pool vacío volvía a conexión directa**
+// — la IP real del operador quedaba expuesta al upstream y en los logs solo se veían
+// peticiones directas esporádicas.
 //
-// 这条路径每个请求都会走（recordProxyResult 结束就调），而 WAL 模式下并发
-// UPDATE 期间 rows.Next() 完全可能返回 SQLITE_BUSY，所以"偶发"就是这么来的。
+// Esta ruta se recorre en cada petición (se llama al terminar recordProxyResult), y en
+// modo WAL, durante un UPDATE concurrente, rows.Next() puede perfectamente devolver
+// SQLITE_BUSY: de ahí lo "esporádico".
 func loadProxies() {
 	rows, err := getDB().Query(`SELECT id, name, url, enabled, weight, fail_count,
         COALESCE(last_used,0), COALESCE(last_error,''), created_at FROM proxies ORDER BY id`)
 	if err != nil {
-		logf("[proxy] 读取失败，保留上一次的代理池: %v", err)
+		logf("[proxy] fallo al leer; se conserva el pool de proxies anterior: %v", err)
 		return
 	}
 	defer rows.Close()
@@ -52,14 +56,14 @@ func loadProxies() {
 		var enabled int
 		if err := rows.Scan(&p.ID, &p.Name, &p.URL, &enabled, &p.Weight, &p.FailCount,
 			&p.LastUsed, &p.LastError, &p.CreatedAt); err != nil {
-			logf("[proxy] 有行读不出来，保留上一次的代理池: %v", err)
+			logf("[proxy] no se pudo leer una fila; se conserva el pool de proxies anterior: %v", err)
 			return
 		}
 		p.Enabled = enabled == 1
 		list = append(list, p)
 	}
 	if err := rows.Err(); err != nil {
-		logf("[proxy] 遍历中断，保留上一次的代理池: %v", err)
+		logf("[proxy] iteración interrumpida; se conserva el pool de proxies anterior: %v", err)
 		return
 	}
 	proxyMu.Lock()
@@ -67,17 +71,21 @@ func loadProxies() {
 	proxyMu.Unlock()
 }
 
-// 连续失败到这个次数就把代理熔断，等冷却期过了再放回池子。
+// Al llegar a este número de fallos consecutivos se cortocircuita el proxy; vuelve al
+// pool cuando pasa el enfriamiento.
 const proxyFailThreshold = 5
 
-// proxyUsable 判断这条代理现在能不能用。
+// proxyUsable indica si este proxy se puede usar ahora.
 //
-// 熔断不是永久除名：被 Google 拦掉的出口实测 106-121 分钟就自动恢复，而旧写法
-// 只认 fail_count<5，一旦超了就再也选不中，也就永远等不到一次成功把 fail_count
-// 清零 —— 只能去面板手动重置。冷却期从 last_used（也就是最后一次尝试）算起，
-// 放回去再失败一次就重新计时。
+// El cortacircuitos no es una expulsión permanente: las salidas bloqueadas por Google
+// se recuperan solas en 106-121 minutos según las pruebas, pero la versión antigua solo
+// aceptaba fail_count<5, y una vez superado no se volvía a elegir, así que nunca llegaba
+// una petición exitosa que pusiera fail_count a cero — solo quedaba reiniciar a mano
+// desde el panel. El enfriamiento se cuenta desde last_used (el último intento), y al
+// devolverlo al pool, un nuevo fallo reinicia el cómputo.
 //
-// cooldownMin<=0 表示关掉冷却，退回"熔断即永久除名"的旧行为。
+// cooldownMin<=0 desactiva el enfriamiento y recupera el comportamiento antiguo de
+// "cortocircuito = expulsión permanente".
 func proxyUsable(p Proxy, now int64, cooldownMin int) bool {
 	if !p.Enabled {
 		return false
@@ -91,57 +99,68 @@ func proxyUsable(p Proxy, now int64, cooldownMin int) bool {
 	return now-p.LastUsed >= int64(cooldownMin)*60
 }
 
-// kv 里记迁移/播种状态的键。
+// Claves en kv que registran el estado de migración/siembra.
 const (
 	kvLegacyProxyDone = "legacy_static_proxy_migrated"
 	kvSeededProxyID   = "seeded_proxy_id"
 	kvSeededProxyURL  = "seeded_proxy_url"
 )
 
-// seedProxiesFromConfig 把启动参数和历史遗留的「静态代理」并进代理池。
+// seedProxiesFromConfig incorpora al pool de proxies los parámetros de arranque y el
+// «proxy estático» heredado.
 //
-// 以前代理有两个入口：代理池，和「设置」页那个单独的静态代理文本框（池空时才用）。
-// 后者不是"简单版"而是**残废版** —— 它走的是 picked.ID=0 这条路，于是跟直连共用
-// 同一个限流 slot、recordProxyResult 压根不会被调用，也就没有失败计数、没有熔断、
-// 没有冷却、面板上看不到任何状态。池子里放一个，处处严格更好。
+// Antes había dos entradas para proxies: el pool de proxies y el campo de texto del
+// proxy estático de la página «Ajustes» (que solo se usaba si el pool estaba vacío).
+// Este último no era una "versión simple" sino una **versión coja**: pasaba por la ruta
+// picked.ID=0, así que compartía el mismo slot de limitación de tasa que la conexión
+// directa, recordProxyResult no se llamaba nunca y por tanto no había contador de fallos,
+// ni cortacircuitos, ni enfriamiento, ni estado visible en el panel. Meter uno en el pool
+// es más estricto en todos los aspectos.
 //
-// 现在请求路径只认池子，这个函数负责把旧入口的值搬进来。
+// Ahora la ruta de peticiones solo reconoce el pool; esta función se encarga de trasladar
+// el valor de la entrada antigua.
 func seedProxiesFromConfig() {
 	migrateLegacyStaticProxy()
 	syncSeededProxy()
 }
 
-// migrateLegacyStaticProxy 一次性把 kv 里遗留的静态代理搬进池子。
+// migrateLegacyStaticProxy traslada una sola vez al pool el proxy estático heredado
+// de kv.
 //
-// 两条保命规则，都是针对"用户的库已经在跑"这个前提：
+// Dos reglas de seguridad, ambas pensando en "la base de datos del usuario ya está en
+// marcha":
 //
-//  1. **入池成功才标记完成**，失败就原样留着下次再试。旧版的
-//     validateRuntimeConfig 对这个字段零校验，用户完全可能存的是 `1.2.3.4:8080`
-//     这种缺 scheme 的值，而 proxyCreate 会拒收它 —— 先清值再入池的话，用户升级
-//     后代理凭空消失，流量全转直连然后被上游拦。
-//  2. 用**独立的迁移标记**，不去改写 runtime_config 那个 JSON。少动一次已有数据
-//     就少一分把别的字段写坏的风险；顺带回滚到旧版时那条静态代理还在，行为不变。
+//  1. **Solo se marca como hecho si entra al pool con éxito**; si falla se deja tal cual
+//     para reintentarlo la próxima vez. En la versión antigua validateRuntimeConfig no
+//     validaba este campo en absoluto, y el usuario podía perfectamente haber guardado
+//     un valor sin scheme como `1.2.3.4:8080`, que proxyCreate rechaza: si se borrara el
+//     valor antes de meterlo al pool, el proxy desaparecería al actualizar, todo el
+//     tráfico pasaría a conexión directa y el upstream lo bloquearía.
+//  2. Usar una **marca de migración independiente** sin reescribir el JSON de
+//     runtime_config. Tocar una sola vez menos datos ya existentes reduce el riesgo de
+//     dañar otros campos; además, al revertir a la versión antigua el proxy estático
+//     sigue ahí y el comportamiento no cambia.
 func migrateLegacyStaticProxy() {
 	if kvGet(kvLegacyProxyDone) == "1" {
 		return
 	}
 	v := strings.TrimSpace(legacyStaticProxy())
 	if v == "" {
-		_ = kvSet(kvLegacyProxyDone, "1") // 本来就没有，标记掉免得每次启动都解析一遍
+		_ = kvSet(kvLegacyProxyDone, "1") // No había ninguno; se marca para no parsear en cada arranque
 		return
 	}
 	if !poolHasProxyURL(v) {
-		if _, err := proxyCreate("原静态代理", v, 1); err != nil {
-			logf("[proxy] 「设置」页的静态代理迁入池子失败，原值保留、下次启动重试: %v", err)
+		if _, err := proxyCreate("Proxy estático anterior", v, 1); err != nil {
+			logf("[proxy] fallo al migrar el proxy estático de la página «Ajustes» al pool; se conserva el valor original y se reintentará en el próximo arranque: %v", err)
 			return
 		}
-		logf("[proxy] 「设置」页的静态代理已迁入代理池")
+		logf("[proxy] el proxy estático de la página «Ajustes» se ha migrado al pool de proxies")
 	}
 	_ = kvSet(kvLegacyProxyDone, "1")
 }
 
-// legacyStaticProxy 只读地取 kv 里遗留的 runtime_config.proxy。
-// RuntimeConfig 已经没有这个字段了，所以只能直接看原始 JSON。
+// legacyStaticProxy lee en modo solo lectura el runtime_config.proxy heredado de kv.
+// RuntimeConfig ya no tiene este campo, así que solo queda mirar el JSON en crudo.
 func legacyStaticProxy() string {
 	raw := kvGet(runtimeConfigKey)
 	if raw == "" {
@@ -155,13 +174,15 @@ func legacyStaticProxy() string {
 	return v
 }
 
-// syncSeededProxy 让池子里跟着 --proxy / config.json 走一条记录。
+// syncSeededProxy mantiene en el pool un registro ligado a --proxy / config.json.
 //
-// 启动参数是**声明式**的：值变了就更新同一条，而不是再加一条。按 URL 去重的写法
-// 挡不住这个 —— 用户把 compose 里的代理换掉，旧那条会留在池子里继续 enabled、
-// 继续接流量，成了一条谁也不知道还在用的僵尸出口。
+// Los parámetros de arranque son **declarativos**: si cambia el valor se actualiza el
+// mismo registro, no se añade otro. Deduplicar por URL no lo evita: si el usuario cambia
+// el proxy en su compose, el registro viejo se queda en el pool, sigue enabled y sigue
+// recibiendo tráfico, convertido en una salida zombi que nadie sabe que sigue en uso.
 //
-// 值没变时**完全不碰池子**：用户在面板上对这条记录的增删改停用，都以面板为准。
+// Si el valor no cambia **no se toca el pool en absoluto**: los altas, bajas, ediciones y
+// desactivaciones que el usuario haga en el panel sobre ese registro mandan.
 func syncSeededProxy() {
 	url := strings.TrimSpace(cfg.Proxy)
 	prev := kvGet(kvSeededProxyURL)
@@ -172,28 +193,29 @@ func syncSeededProxy() {
 	if url == "" {
 		_ = kvSet(kvSeededProxyURL, "")
 		_ = kvSet(kvSeededProxyID, "")
-		logf("[proxy] --proxy 已从启动参数移除，对应的池子记录一并撤下")
+		logf("[proxy] --proxy se ha eliminado de los parámetros de arranque; también se retira su registro del pool")
 		return
 	}
 	if poolHasProxyURL(url) {
-		// 用户自己已经在面板加过同一个出口，不重复建，只记下来
+		// El usuario ya añadió la misma salida desde el panel; no se duplica, solo se anota
 		_ = kvSet(kvSeededProxyURL, url)
 		_ = kvSet(kvSeededProxyID, "")
 		return
 	}
-	id, err := proxyCreate("启动参数", url, 1)
+	id, err := proxyCreate("Parámetros de arranque", url, 1)
 	if err != nil {
-		logf("[proxy] --proxy 入池失败: %v", err)
-		return // 不记 URL，下次启动还会再试
+		logf("[proxy] fallo al añadir --proxy al pool: %v", err)
+		return // No se anota la URL; se reintentará en el próximo arranque
 	}
 	_ = kvSet(kvSeededProxyURL, url)
 	_ = kvSet(kvSeededProxyID, strconv.FormatInt(id, 10))
-	logf("[proxy] --proxy / config.json 的代理已加入代理池")
+	logf("[proxy] el proxy de --proxy / config.json se ha añadido al pool de proxies")
 }
 
-// dropSeededProxy 撤掉上一次由启动参数建的那条。
-// 只在这条记录**还是我们建时那个 URL** 时才删 —— 用户在面板上把它改成别的出口了，
-// 就说明他接管了这条记录，不该被启动参数的变更连坐删掉。
+// dropSeededProxy retira el registro creado la última vez por los parámetros de
+// arranque. Solo se borra si ese registro **sigue teniendo la URL con la que lo creamos**
+// — si el usuario lo cambió en el panel por otra salida, es que ha tomado el control de
+// ese registro y no debe caer por un cambio en los parámetros de arranque.
 func dropSeededProxy(prevURL string) {
 	idStr := kvGet(kvSeededProxyID)
 	if idStr == "" || prevURL == "" {
@@ -217,11 +239,11 @@ func dropSeededProxy(prevURL string) {
 		return
 	}
 	if err := proxyDelete(id); err != nil {
-		logf("[proxy] 撤下旧的启动参数代理失败: %v", err)
+		logf("[proxy] fallo al retirar el proxy antiguo de los parámetros de arranque: %v", err)
 	}
 }
 
-// poolHasProxyURL 池子里有没有这个 URL。
+// poolHasProxyURL indica si el pool contiene esta URL.
 func poolHasProxyURL(url string) bool {
 	proxyMu.RLock()
 	defer proxyMu.RUnlock()
@@ -233,18 +255,21 @@ func poolHasProxyURL(url string) bool {
 	return false
 }
 
-// pickProxyWithCapacity 找一个可用（enabled + 没熔断或已过冷却）且限流没满的代理。
-// 返回 (proxy, ok)。所有代理都不可用或都满时返回 ok=false。
+// pickProxyWithCapacity busca un proxy disponible (enabled + sin cortocircuito o con el
+// enfriamiento ya pasado) y cuya limitación de tasa no esté llena.
+// Devuelve (proxy, ok). Si ningún proxy sirve o todos están llenos, ok=false.
 //
-// 跟旧的 pickProxy 区别：会问 trySlotAcquire 看 slot 是否有容量；
-// 调用方拿到的 slot 必须配套调 slotRelease(proxy.ID)。
+// Diferencia con el antiguo pickProxy: consulta trySlotAcquire para ver si el slot tiene
+// capacidad; el slot que recibe quien llama debe emparejarse con slotRelease(proxy.ID).
 func pickProxyWithCapacity() (Proxy, bool) { return pickProxyPreferring(0) }
 
-// pickProxyPreferring 优先挑 preferID 那个出口，它不可用或没容量时才轮询别的。
+// pickProxyPreferring elige preferentemente la salida preferID y solo rota a otras si
+// aquella no está disponible o no tiene capacidad.
 //
-// 为什么要粘住：cookie 池和代理池各自独立轮转的话，同一个 Google 账号会在几十个
-// 出口 IP 之间来回跳 —— 这在 Google 眼里正是账号共享的特征。粘不住时宁可换出口
-// 也不排队等，可用性优先。
+// Por qué conviene fijarla: si el pool de cookies y el de proxies rotan por separado, la
+// misma cuenta de Google salta entre decenas de IP de salida — justo lo que Google
+// identifica como uso compartido de cuenta. Cuando no se puede mantener fija, se prefiere
+// cambiar de salida antes que esperar en cola: la disponibilidad primero.
 func pickProxyPreferring(preferID int64) (Proxy, bool) {
 	proxyMu.RLock()
 	defer proxyMu.RUnlock()
@@ -268,11 +293,11 @@ func pickProxyPreferring(preferID int64) (Proxy, bool) {
 				if ok, _ := trySlotAcquire(p.ID); ok {
 					return p, true
 				}
-				break // 绑的那个满了，往下走正常轮询
+				break // La vinculada está llena; se pasa a la rotación normal
 			}
 		}
 	}
-	// 从轮询起点开始,找第一个 slot 没满的
+	// Desde el punto de inicio de la rotación, busca el primer slot que no esté lleno
 	start := atomic.AddUint64(&proxyCursor, 1) - 1
 	for i := 0; i < len(pool); i++ {
 		p := pool[(int(start)+i)%len(pool)]
@@ -283,14 +308,18 @@ func pickProxyPreferring(preferID int64) (Proxy, bool) {
 	return Proxy{}, false
 }
 
-// recordProxyResult 回写一次请求的结果，并同步更新内存里那一条。
+// recordProxyResult escribe el resultado de una petición y actualiza en consecuencia esa
+// misma entrada en memoria.
 //
-// 只改内存里的那一条，不整表重读：这个函数每个请求都会调，重读一次就是一次全表
-// SELECT，而它自己刚发起过 UPDATE —— 高并发下正是这对读写在 WAL 上撞出 SQLITE_BUSY，
-// 也就是代理池被读空、请求退回直连的触发条件。
+// Solo modifica la entrada en memoria, sin releer toda la tabla: esta función se llama en
+// cada petición, y releer supondría un SELECT de toda la tabla justo después de que ella
+// misma lanzara un UPDATE — con alta concurrencia, ese par de lectura/escritura es el que
+// choca en WAL y provoca SQLITE_BUSY, es decir, la condición que vacía el pool de proxies
+// y devuelve las peticiones a conexión directa.
 //
-// 代价是内存里的 FailCount++ 和 DB 的 fail_count+1 各算各的，别的进程直接改库会
-// 让两边漂移。单进程持有这个库，重启也会从 DB 重新加载，可以接受。
+// El precio es que el FailCount++ en memoria y el fail_count+1 de la DB se llevan por
+// separado: si otro proceso modifica la base directamente, ambos valores divergen. Como
+// un único proceso posee esta base y al reiniciar se recarga desde la DB, es aceptable.
 func recordProxyResult(id int64, success bool, errStr string) {
 	if id == 0 {
 		return
@@ -341,12 +370,14 @@ func proxyCreate(name, url string, weight int) (int64, error) {
 	return id, nil
 }
 
-// validateProxyURL 校验代理 URL 协议。
-// 支持 http / https / socks5 / socks5h。
+// validateProxyURL valida el esquema de la URL del proxy.
+// Admite http / https / socks5 / socks5h.
 //
-// scheme 按大小写不敏感比：URL 的 scheme 本来就不区分大小写，url.Parse 会统一转小写，
-// 所以 HTTP:// 在 4.0.0 那条不做校验的静态代理路径上是能正常工作的。校验若大小写
-// 敏感，升级时就会把这种值拦下来 —— 用户什么都没改，代理却不工作了。
+// El scheme se compara sin distinguir mayúsculas: el scheme de una URL no distingue
+// mayúsculas y url.Parse lo pasa todo a minúsculas, así que HTTP:// funcionaba sin
+// problema en la ruta de proxy estático de 4.0.0, que no validaba nada. Si la validación
+// distinguiera mayúsculas, al actualizar se rechazaría ese tipo de valor: el usuario no
+// habría cambiado nada y el proxy dejaría de funcionar.
 func validateProxyURL(s string) error {
 	low := strings.ToLower(s)
 	for _, p := range []string{"http://", "https://", "socks5://", "socks5h://"} {
@@ -354,7 +385,7 @@ func validateProxyURL(s string) error {
 			return nil
 		}
 	}
-	return errors.New("代理 URL 必须以 http:// / https:// / socks5:// / socks5h:// 开头")
+	return errors.New("la URL del proxy debe empezar por http:// / https:// / socks5:// / socks5h://")
 }
 
 func proxyUpdate(id int64, name, url string, enabled *bool, weight *int) error {
@@ -428,7 +459,8 @@ func joinComma(parts []string) string {
 	return out
 }
 
-// proxyNameByID 按 id 找代理名，找不到返回空串（0 = 还没绑 / 直连）。
+// proxyNameByID busca el nombre del proxy por id; si no lo encuentra devuelve cadena
+// vacía (0 = sin vincular / directo).
 func proxyNameByID(id int64) string {
 	if id <= 0 {
 		return ""
@@ -443,8 +475,10 @@ func proxyNameByID(id int64) string {
 	return ""
 }
 
-// proxyUsableByID 这个出口现在还能不能用（存在 + enabled + 没熔断或已过冷却）。
-// 判断账号绑定的出口是不是还有效，无效才该重新绑。
+// proxyUsableByID indica si esta salida se puede usar ahora (existe + enabled + sin
+// cortocircuito o con el enfriamiento ya pasado).
+// Sirve para decidir si la salida vinculada a la cuenta sigue siendo válida; solo si no
+// lo es procede volver a vincular.
 func proxyUsableByID(id int64) bool {
 	if id <= 0 {
 		return false
@@ -461,7 +495,8 @@ func proxyUsableByID(id int64) bool {
 	return false
 }
 
-// proxyURLByID 按 id 取代理 URL，找不到返回空串（直连）。
+// proxyURLByID obtiene la URL del proxy por id; si no la encuentra devuelve cadena vacía
+// (directo).
 func proxyURLByID(id int64) string {
 	if id <= 0 {
 		return ""

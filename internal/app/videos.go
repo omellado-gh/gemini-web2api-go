@@ -1,13 +1,13 @@
 package app
 
-// /v1/videos —— OpenAI（Sora）形状的异步视频生成端点。
+// /v1/videos —— endpoint asíncrono de generación de vídeo con la forma de OpenAI (Sora).
 //
-// gemini 视频要几十秒到几分钟，同步阻塞一个 HTTP 请求不现实，所以照 OpenAI Sora 那套走异步：
-//   POST /v1/videos               建任务，立即返回 {id, status:"queued"}
-//   GET  /v1/videos/{id}          轮询状态 queued|in_progress|completed|failed
-//   GET  /v1/videos/{id}/content  完成后下 MP4
-// 底层复用 callGemini（跟 /v1/chat/completions 里 model=gemini-video 同一条链），
-// 只是把「阻塞等结果」挪到后台 goroutine，前台立即返 id。
+// El vídeo de gemini tarda de decenas de segundos a minutos; bloquear una petición HTTP de forma síncrona no es realista, así que se sigue el esquema asíncrono de OpenAI Sora:
+//   POST /v1/videos               crea la tarea y devuelve al instante {id, status:"queued"}
+//   GET  /v1/videos/{id}          consulta el estado queued|in_progress|completed|failed
+//   GET  /v1/videos/{id}/content  descarga el MP4 al terminar
+// Por debajo reutiliza callGemini (la misma cadena que model=gemini-video en /v1/chat/completions),
+// solo que traslada «bloquear esperando el resultado» a una goroutine de fondo y el frente devuelve el id al instante.
 
 import (
 	"encoding/json"
@@ -26,7 +26,7 @@ type videoJob struct {
 	Prompt    string `json:"prompt,omitempty"`
 	Error     string `json:"error,omitempty"`
 
-	mp4  []byte // 完成后的视频字节，不进 JSON
+	mp4  []byte // bytes del vídeo al terminar; no entran en el JSON
 	mime string
 }
 
@@ -37,7 +37,7 @@ var (
 
 func putVideoJob(j *videoJob) {
 	videoJobsMu.Lock()
-	// 顺手清掉 2 小时前的旧任务，别让内存里越堆越多。
+	// De paso se limpian las tareas de más de 2 horas para que no se acumulen en memoria.
 	cutoff := time.Now().Unix() - 2*3600
 	for id, old := range videoJobs {
 		if old.CreatedAt < cutoff {
@@ -54,7 +54,7 @@ func getVideoJob(id string) *videoJob {
 	return videoJobs[id]
 }
 
-// handleCreateVideo 处理 POST /v1/videos。
+// handleCreateVideo gestiona POST /v1/videos.
 func handleCreateVideo(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, 405, map[string]any{"error": map[string]string{"message": "method not allowed"}})
@@ -74,8 +74,8 @@ func handleCreateVideo(w http.ResponseWriter, r *http.Request) {
 	if model == "" {
 		model = "gemini-video"
 	}
-	// 校验模型确实是视频模型（查基础配置，不用 resolveModel —— 它无 cookie 时对登录态模型
-	// 直接返「需要 cookie」错，那个错该留给 job 里报，别在这一步糊成「不是视频模型」）。
+	// Se valida que el modelo sea realmente un modelo de vídeo (se mira la configuración base, sin usar resolveModel —— sin cookie, este
+	// devuelve directamente el error «se necesita cookie» para los modelos con sesión, y ese error debe dejarse al job; no hay que confundirlo aquí con «no es un modelo de vídeo»).
 	if base, ok := Models[model]; !ok || base.Tool != toolVideo {
 		writeJSON(w, 400, map[string]any{"error": map[string]string{
 			"message": "model must be a video model (gemini-video)", "type": "invalid_request_error"}})
@@ -94,7 +94,7 @@ func handleCreateVideo(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, j)
 }
 
-// runVideoJob 后台跑视频生成，结果写回 job。
+// runVideoJob ejecuta la generación de vídeo en segundo plano y escribe el resultado de vuelta al job.
 func runVideoJob(j *videoJob) {
 	videoJobsMu.Lock()
 	j.Status = "in_progress"
@@ -137,7 +137,7 @@ func finishVideoJob(j *videoJob, mp4 []byte, mime, errStr string) {
 	j.Status = "completed"
 }
 
-// handleVideoItem 处理 GET /v1/videos/{id} 和 /v1/videos/{id}/content。
+// handleVideoItem gestiona GET /v1/videos/{id} y /v1/videos/{id}/content.
 func handleVideoItem(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, 405, map[string]any{"error": map[string]string{"message": "method not allowed"}})

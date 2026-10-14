@@ -132,7 +132,7 @@ func getDB() *dbx {
 			}
 			sqliteDir = filepath.Dir(path)
 			if err := os.MkdirAll(sqliteDir, 0o755); err != nil {
-				fmt.Fprintf(os.Stderr, "[db] 建目录 %s 失败: %v\n%s", sqliteDir, err, dbPermHint(sqliteDir))
+				fmt.Fprintf(os.Stderr, "[db] fallo al crear el directorio %s: %v\n%s", sqliteDir, err, dbPermHint(sqliteDir))
 				os.Exit(1)
 			}
 			connStr = fmt.Sprintf("file:%s?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)", path)
@@ -145,23 +145,23 @@ func getDB() *dbx {
 		conn.SetMaxOpenConns(8)
 		conn.SetMaxIdleConns(4)
 		conn.SetConnMaxLifetime(0)
-		// mysql/pg 驱动默认不接受多语句 Exec，按方言逐条建表。
+		// los drivers de mysql/pg no aceptan Exec multi-sentencia por defecto, así que se crean tabla por tabla según el dialecto.
 		for _, stmt := range schemaStatements(curDialect) {
 			if _, err := conn.Exec(stmt); err != nil {
-				// mysql 的 CREATE INDEX 没有 IF NOT EXISTS，重启时重复报错，容忍。
+				// el CREATE INDEX de mysql no tiene IF NOT EXISTS, y al reiniciar vuelve a dar error; se tolera.
 				if strings.HasPrefix(strings.ToUpper(strings.TrimSpace(stmt)), "CREATE INDEX") {
 					continue
 				}
-				// sqlite 最常见 SQLITE_CANTOPEN(14)：目录能进但写不了，判据+解法一起打。
+				// el caso más común en sqlite es SQLITE_CANTOPEN(14): se puede entrar al directorio pero no escribir; se imprimen juntos el diagnóstico y la solución.
 				hint := ""
 				if curDialect == dialectSQLite {
 					hint = dbPermHint(sqliteDir)
 				}
-				fmt.Fprintf(os.Stderr, "[db] 初始化失败: %v\n  语句: %s\n%s", err, stmt, hint)
+				fmt.Fprintf(os.Stderr, "[db] fallo de inicialización: %v\n  sentencia: %s\n%s", err, stmt, hint)
 				os.Exit(1)
 			}
 		}
-		// 老 sqlite 库的列迁移。新库/mysql/pg 不需要（跑了也只是报错忽略），只在 sqlite 上做。
+		// migración de columnas de bases sqlite antiguas. Las nuevas/mysql/pg no lo necesitan (ejecutarlo solo daría errores ignorados); se hace solo en sqlite.
 		if curDialect == dialectSQLite {
 			_, _ = conn.Exec(`ALTER TABLE requests ADD COLUMN upstream_model TEXT`)
 			_, _ = conn.Exec(`ALTER TABLE requests ADD COLUMN account_id INTEGER`)
@@ -254,19 +254,19 @@ func kvSet(k, v string) error {
 	return err
 }
 
-// dbPermHint 在数据库打不开时给出可操作的提示。
+// dbPermHint da una pista accionable cuando no se puede abrir la base de datos.
 //
-// 判据：容器镜像是 distroless + USER nonroot（uid 65532），而 bind mount 会用宿主
-// 目录的属主整个盖掉镜像里 /data 的属主。宿主上目录不存在时 Docker 自动建、属主是
-// root，于是容器里的 65532 写不进去 —— 实测这就是 `unable to open database file (14)`
-// 的成因（同一条命令只把属主 chown 成 65532 就能起来）。
+// Diagnóstico: la imagen del contenedor es distroless + USER nonroot (uid 65532), y el bind mount sobrescribe por completo el propietario de /data de la imagen
+// con el propietario del directorio del host. Cuando el directorio no existe en el host, Docker lo crea automáticamente con propietario
+// root, así que el 65532 del contenedor no puede escribir; esta es la causa comprobada del `unable to open database file (14)`
+// (el mismo comando arranca con solo cambiar el propietario a 65532 con chown).
 func dbPermHint(dir string) string {
-	uid := os.Getuid() // Windows 上返回 -1，那边不涉及这个问题
+	uid := os.Getuid() // en Windows devuelve -1; allí este problema no aplica
 	return fmt.Sprintf(""+
-		"      当前进程 uid=%d，写不进目录 %s。\n"+
-		"      Docker 部署最常见的原因是 bind mount 的宿主目录属主是 root，\n"+
-		"      而镜像以 nonroot(65532) 运行。两种解法：\n"+
-		"        1) 改用具名卷（推荐）：volumes 写 gw2a-data:/data\n"+
-		"        2) 保留 bind mount 就把属主改过来：sudo chown -R 65532:65532 ./data\n",
+		"      el proceso actual uid=%d no puede escribir en el directorio %s.\n"+
+		"      En Docker el motivo más común es que el directorio anfitrión del bind mount es propiedad de root,\n"+
+		"      y la imagen se ejecuta como nonroot(65532). Dos soluciones:\n"+
+		"        1) Usar un volumen con nombre (recomendado): escribir gw2a-data:/data en volumes\n"+
+		"        2) Si se conserva el bind mount, cambiar el propietario: sudo chown -R 65532:65532 ./data\n",
 		uid, dir)
 }

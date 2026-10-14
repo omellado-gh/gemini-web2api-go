@@ -8,10 +8,10 @@ import (
 	"github.com/pkoukk/tiktoken-go"
 )
 
-// tiktoken cl100k_base — GPT-4 BPE。Gemini 真 tokenizer Google 没公开，
-// 但 BPE 层面规则相近，对中英混合都比 chars/4 准确得多（实测中文偏差 ±20% 内）。
+// tiktoken cl100k_base (GPT-4 BPE). El tokenizer real de Gemini no está publicado;
+// las reglas BPE son similares y para texto mixto chino/inglés es mucho más preciso que chars/4 (desviación ~±20% en pruebas).
 //
-// 加载一次到内存（~5MB），后续 Encode 每次 ~微秒级。
+// Se carga una vez en memoria (~5MB); Encode toma ~microsegundos.
 var (
 	tokenizer     *tiktoken.Tiktoken
 	tokenizerOnce sync.Once
@@ -20,9 +20,9 @@ var (
 
 func initTokenizer() {
 	tokenizerOnce.Do(func() {
-		// tiktoken-go 第一次加载会从远端下 cl100k_base.tiktoken (~3MB)，
-		// 缓存到 ${TIKTOKEN_CACHE_DIR} 或 ${HOME}/.cache/tiktoken。
-		// docker 镜像里建议预先 docker build 时缓存。
+		// La primera carga de tiktoken-go descarga cl100k_base.tiktoken (~3MB) desde remoto;
+		// se guarda en caché en ${TIKTOKEN_CACHE_DIR} o ${HOME}/.cache/tiktoken.
+		// En imagen Docker se recomienda precachearlo durante docker build.
 		t, err := tiktoken.GetEncoding("cl100k_base")
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "[tokenizer] init failed (will fall back to chars/4): %v\n", err)
@@ -33,8 +33,8 @@ func initTokenizer() {
 	})
 }
 
-// countTokens 返回文本的近似 token 数。
-// tokenizer 加载失败时退回到 chars/4 估算。
+// countTokens devuelve una estimación aproximada de tokens.
+// Si falla la carga del tokenizer, se usa estimación chars/4.
 func countTokens(s string) int {
 	if !tokenizerOK || tokenizer == nil {
 		return len(s) / 4

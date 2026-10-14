@@ -6,18 +6,18 @@ import (
 	"sync"
 )
 
-// RuntimeConfig 是面板里能随时改、改完立刻生效的那部分配置。
+// RuntimeConfig es la parte de la configuración que se puede cambiar desde el panel en cualquier momento y que surte efecto al instante.
 //
-// 部署期配置（监听地址、DB 路径、admin token、API key、cookie 文件）**不在这里**：
-// 那些改了本来就要重启进程，放 docker-compose.yml 的 environment / command 更合适，
-// 也避免把凭证放进一个网页表单。这里只放调优参数——为了改个超时重启一次服务太蠢。
+// La configuración de despliegue (dirección de escucha, ruta de DB, admin token, API key, archivo de cookies) **no está aquí**:
+// cambiarla obliga a reiniciar el proceso de todos modos, así que es mejor ponerla en environment / command de docker-compose.yml,
+// y además evita meter credenciales en un formulario web. Aquí solo van parámetros de ajuste: reiniciar el servicio por cambiar un timeout es absurdo.
 //
-// 取值优先级：面板改过的（存 kv 表） > config.json / CLI flag > 内置默认。
+// Prioridad de valores: lo modificado en el panel (guardado en la tabla kv) > config.json / CLI flag > valores por defecto integrados.
 //
-// 加字段必读：面板保存走整体反序列化（admin.go 的 Decode(&RuntimeConfig)），而前端
-// saveRtCfg 只按 admin_ui 的 RT_GROUPS 拼 PUT body。新加的字段必须同步进 RT_GROUPS，
-// 否则它不在 body 里、每次点「保存并生效」都被解成零值冲掉（multi_turn 就这么被静默
-// 重置过，连 config.json 里设的都白设，见 #27）。
+// Obligatorio leer al añadir campos: el guardado del panel hace una deserialización completa (Decode(&RuntimeConfig) en admin.go), y el frontend
+// saveRtCfg solo arma el body del PUT según RT_GROUPS de admin_ui. Los campos nuevos deben sincronizarse en RT_GROUPS,
+// o no estarán en el body y cada clic en «Guardar y aplicar» los resolverá a valor cero y los pisará (así se restableció silenciosamente
+// multi_turn, dejando inútil incluso lo configurado en config.json; ver #27).
 type RuntimeConfig struct {
 	RetryAttempts   int    `json:"retry_attempts"`
 	RetryDelaySec   int    `json:"retry_delay_sec"`
@@ -68,8 +68,8 @@ var (
 	rtVal RuntimeConfig
 )
 
-// initRuntimeConfig 用启动配置做基线，再把面板改过的值盖上去。
-// 必须在 DB 打开之后调用。
+// initRuntimeConfig usa la configuración de arranque como base y luego superpone los valores modificados en el panel.
+// Debe llamarse después de abrir la DB.
 func initRuntimeConfig() {
 	base := RuntimeConfig{
 		RetryAttempts:   cfg.RetryAttempts,
@@ -101,7 +101,7 @@ func initRuntimeConfig() {
 			if err := validateRuntimeConfig(saved); err == nil {
 				base = saved
 			} else {
-				logf("[config] 忽略 kv 里不合法的运行时配置: %v", err)
+				logf("[config] se ignora la configuración en tiempo de ejecución no válida de kv: %v", err)
 			}
 		}
 	}
@@ -110,18 +110,18 @@ func initRuntimeConfig() {
 	rtMu.Unlock()
 }
 
-// rtCfg 返回当前运行时配置的快照。
+// rtCfg devuelve una instantánea de la configuración en tiempo de ejecución actual.
 func rtCfg() RuntimeConfig {
 	rtMu.RLock()
 	defer rtMu.RUnlock()
 	return rtVal
 }
 
-// validateRuntimeConfig 校验面板传来的值。
+// validateRuntimeConfig valida los valores que llegan del panel.
 //
-// 这些数字直接决定重试次数、超时和限流额度，是外部输入进敏感落点：
-// 0 或负数会让限流器永远拒绝或永远放行，超大值能把单个请求挂死几小时。
-// 上界给得比任何合理用法都宽，只挡明显离谱的输入。
+// Estos números determinan directamente reintentos, timeouts y cuota de limitación de tasa, y son entrada externa en puntos sensibles:
+// un 0 o un negativo haría que el limitador rechace o permita siempre, y un valor enorme podría colgar una petición durante horas.
+// El límite superior es más amplio que cualquier uso razonable; solo bloquea entradas claramente absurdas.
 func validateRuntimeConfig(c RuntimeConfig) error {
 	type rangeCheck struct {
 		name     string
@@ -140,22 +140,22 @@ func validateRuntimeConfig(c RuntimeConfig) error {
 		{"max_prompt_bytes", c.MaxPromptBytes, 0, 10000000},
 	} {
 		if r.v < r.min || r.v > r.max {
-			return fmt.Errorf("%s=%d 超出允许范围 [%d, %d]", r.name, r.v, r.min, r.max)
+			return fmt.Errorf("%s=%d fuera del rango permitido [%d, %d]", r.name, r.v, r.min, r.max)
 		}
 	}
 	if _, _, err := resolveModel(c.DefaultModel); err != nil {
-		return fmt.Errorf("default_model 不可用: %v", err)
+		return fmt.Errorf("default_model no disponible: %v", err)
 	}
 	if c.Impersonate == "" {
-		return fmt.Errorf("impersonate 不能为空")
+		return fmt.Errorf("impersonate no puede estar vacío")
 	}
 	if c.GeminiBL == "" {
-		return fmt.Errorf("gemini_bl 不能为空")
+		return fmt.Errorf("gemini_bl no puede estar vacío")
 	}
 	return nil
 }
 
-// saveRuntimeConfig 校验并持久化，成功后立刻生效。
+// saveRuntimeConfig valida y persiste, y si tiene éxito surte efecto de inmediato.
 func saveRuntimeConfig(next RuntimeConfig) error {
 	if err := validateRuntimeConfig(next); err != nil {
 		return err
@@ -170,6 +170,6 @@ func saveRuntimeConfig(next RuntimeConfig) error {
 	rtMu.Lock()
 	rtVal = next
 	rtMu.Unlock()
-	logf("[config] 运行时配置已更新")
+	logf("[config] configuración en tiempo de ejecución actualizada")
 	return nil
 }

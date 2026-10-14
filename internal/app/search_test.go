@@ -5,24 +5,24 @@ import (
 	"testing"
 )
 
-// 用一份真实抓下来的联网搜索响应，验证 grounding 来源能被解析出来。
+// Con una respuesta real de búsqueda en línea capturada, se verifica que las fuentes de grounding se puedan analizar.
 func TestExtractGrounding(t *testing.T) {
 	raw, err := os.ReadFile("testdata/search_raw.txt")
 	if err != nil {
-		t.Skipf("没有 testdata/search_raw.txt，跳过: %v", err)
+		t.Skipf("no hay testdata/search_raw.txt, se omite: %v", err)
 	}
 	sources := extractGrounding(string(raw))
 	if len(sources) == 0 {
-		t.Fatal("这份响应应该有联网搜索来源，却一个都没解析出来")
+		t.Fatal("esta respuesta debería tener fuentes de búsqueda en línea, pero no se analizó ninguna")
 	}
 	for i, s := range sources {
 		if s.URL == "" {
-			t.Errorf("来源 %d 的 URL 为空", i)
+			t.Errorf("la URL de la fuente %d está vacía", i)
 		}
 		if idx := len(s.URL); idx > 0 && contains(s.URL, "#:~:text=") {
-			t.Errorf("来源 %d 的 URL 还带着 #:~:text= 片段: %s", i, s.URL)
+			t.Errorf("la URL de la fuente %d todavía lleva el fragmento #:~:text=: %s", i, s.URL)
 		}
-		t.Logf("来源 %d: %s | %s", i, s.Title, s.URL)
+		t.Logf("fuente %d: %s | %s", i, s.Title, s.URL)
 	}
 }
 

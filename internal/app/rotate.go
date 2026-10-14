@@ -13,39 +13,46 @@ import (
 	fhttp "github.com/bogdanfinn/fhttp"
 )
 
-// 会话保活。同一条 POST /RotateCookies 有两种 payload，刷的不是同一族 cookie：
+// Mantenimiento de sesión. El mismo POST /RotateCookies tiene dos payloads, y no
+// refrescan la misma familia de cookies:
 //
-//  1. 哨兵 `[000,"-0000000000000000000"]`：无条件换发 `__Secure-1PSIDTS` /
-//     `__Secure-3PSIDTS`。这是登录态真正的短命票（约 30 分钟），不刷就会被
-//     当匿名。payload 必须是这串 JSPB（前导零合法、严格 JSON 非法），
-//     json.Marshal 会变成 `[0,"…"]`，服务端不认。
+//  1. El centinela `[000,"-0000000000000000000"]`: reemite sin condición
+//     `__Secure-1PSIDTS` / `__Secure-3PSIDTS`. Es el verdadero billete efímero de la
+//     sesión iniciada (unos 30 minutos); si no se refresca, se pasa por anónimo. El
+//     payload debe ser esta cadena JSPB (los ceros a la izquierda son válidos, el JSON
+//     estricto no), json.Marshal lo convertiría en `[0,"…"]` y el servidor no lo acepta.
 //
-//  2. 浏览器 iframe 那条：先 GET RotateCookiesPage 拿会话 id，再 POST
-//     `[658,"<id>"]`。只刷新 SIDCC / `__Secure-1PSIDCC` / `__Secure-3PSIDCC`，
-//     间隔由页面 init(...) 最后一个参数给出（实测 600 秒）。
+//  2. La del iframe del navegador: primero GET RotateCookiesPage para obtener el id de
+//     sesión, luego POST `[658,"<id>"]`. Solo refresca SIDCC / `__Secure-1PSIDCC` /
+//     `__Secure-3PSIDCC`; el intervalo lo da el último parámetro del init(...) de la
+//     página (600 segundos medidos).
 //
-// 以前只做了第 2 条，所以号大概半小时就死（issue #6）。Chrome 新版本还有
-// DBSC 设备绑定（GET /RotateBoundCookies + 签名 JWT），那条我们复刻不了；
-// 哨兵这条对 Firefox 导出、以及未绑定设备的会话有效。Chrome 导出的号如果
-// 反复 401，换 Firefox 重新登录再导出。
+// Antes solo se hacía la segunda, así que la cuenta moría a la media hora (issue #6). Las
+// versiones nuevas de Chrome tienen además vinculación de dispositivo DBSC (GET
+// /RotateBoundCookies + JWT firmado), que no podemos replicar; el centinela sí vale para
+// exportaciones de Firefox y sesiones sin dispositivo vinculado. Si una cuenta exportada
+// de Chrome devuelve 401 repetidamente, vuelva a iniciar sesión en Firefox y exporte otra vez.
 
 const (
 	rotatePageURL = "https://accounts.google.com/RotateCookiesPage" +
 		"?og_pid=658&rot=3&origin=https%3A%2F%2Fgemini.google.com&exp_id=0"
 	rotatePostURL = "https://accounts.google.com/RotateCookies"
-	// og_pid 是产品标识，Gemini 固定 658；它既作为上面页面的 query，也回显在页面里。
+	// og_pid es el identificador de producto, fijo en 658 para Gemini; sirve como query de la
+	// página de arriba y también se devuelve en la propia página.
 	rotateProductID = 658
-	// 服务端没给出间隔时的兜底值。
+	// Valor de reserva para cuando el servidor no da intervalo.
 	defaultRotateInterval = 10 * time.Minute
-	// 启动后尽快刷一次：导入时 cookie 可能已经快到期，干等 10 分钟会直接过期。
+	// Refrescar una vez lo antes posible tras arrancar: al importar, la cookie puede estar a
+	// punto de caducar y esperar 10 minutos la haría caducar directamente.
 	firstRotateDelay = 15 * time.Second
-	// 哨兵 payload。前导零是故意的，见文件头。
+	// Payload centinela. Los ceros a la izquierda son intencionados, ver la cabecera del archivo.
 	rotate1PSIDTSBody = `[000,"-0000000000000000000"]`
-	// 打太勤会 429。Gemini-API / notebooklm-py 都用 60 秒地板。
+	// Si se llama demasiado a menudo, da 429. Tanto Gemini-API como notebooklm-py usan un
+	// mínimo de 60 segundos.
 	min1PSIDTSInterval = 60 * time.Second
 )
 
-// 刷新 1PSIDTS 只带这一对。多带实测会 401。
+// El refresco de 1PSIDTS lleva solo este par. En pruebas, llevar más da 401.
 var rotate1PSIDTSCookies = []string{"__Secure-1PSID", "__Secure-1PSIDTS"}
 
 var (
@@ -53,12 +60,14 @@ var (
 	psidtsLastAt = map[int64]time.Time{}
 )
 
-// 页面里形如：init('4162200486104360679', 658.0, 0.0, 0.0, 600.0)
-// 第一个参数是这个会话的标识，最后一个是下次轮转的间隔秒数。
+// En la página tiene la forma: init('4162200486104360679', 658.0, 0.0, 0.0, 600.0)
+// El primer parámetro es el identificador de esta sesión y el último, los segundos hasta la
+// próxima rotación.
 var rotateInitRe = regexp.MustCompile(`init\('([^']{4,64})'\s*,\s*([0-9.]+)\s*,[^)]*?([0-9.]+)\s*\)`)
 
-// rotateAccount 给一个账号做一次保活：先刷 1PSIDTS，再刷 SIDCC。
-// 返回服务端建议的下次间隔，以及这一轮实际刷新的 cookie 名。
+// rotateAccount hace un mantenimiento a una cuenta: primero refresca 1PSIDTS y luego SIDCC.
+// Devuelve el próximo intervalo sugerido por el servidor y los nombres de cookie refrescados
+// realmente en esta ronda.
 func rotateAccount(a CookieAccount) (time.Duration, []string, error) {
 	proxyURL := ""
 	if a.ProxyID > 0 {
@@ -73,7 +82,7 @@ func rotateAccount(a CookieAccount) (time.Duration, []string, error) {
 	c2, n, err := tryRotate1PSIDTS(a.ID, cookie, proxyURL)
 	if err != nil {
 		psidtsErr = err
-		logf("[rotate] 账号 #%d 刷新 1PSIDTS 失败: %v", a.ID, err)
+		logf("[rotate] fallo al refrescar 1PSIDTS de la cuenta #%d: %v", a.ID, err)
 	} else {
 		cookie = c2
 		names = append(names, n...)
@@ -82,7 +91,7 @@ func rotateAccount(a CookieAccount) (time.Duration, []string, error) {
 	c3, iv, n2, err := rotateSIDCC(cookie, proxyURL)
 	if err != nil {
 		sidccErr = err
-		logf("[rotate] 账号 #%d SIDCC 保活失败: %v", a.ID, err)
+		logf("[rotate] fallo el mantenimiento SIDCC de la cuenta #%d: %v", a.ID, err)
 	} else {
 		cookie = c3
 		names = append(names, n2...)
@@ -98,9 +107,10 @@ func rotateAccount(a CookieAccount) (time.Duration, []string, error) {
 		invalidateXSRF(old)
 	}
 	if len(names) > 0 {
-		logf("[rotate] 账号 #%d 刷新了 %s", a.ID, strings.Join(names, ", "))
+		logf("[rotate] la cuenta #%d ha refrescado %s", a.ID, strings.Join(names, ", "))
 	}
-	// 两条路都失败才算失败。1PSIDTS 刷到了但 iframe 页没 init，仍然是续命成功。
+	// Solo cuenta como fallo si fallan las dos rutas. Si se refrescó 1PSIDTS pero la página
+	// del iframe no tenía init, sigue siendo un mantenimiento con éxito.
 	if cookie == a.Cookie && len(names) == 0 {
 		if psidtsErr != nil {
 			return 0, nil, psidtsErr
@@ -112,14 +122,14 @@ func rotateAccount(a CookieAccount) (time.Duration, []string, error) {
 	return interval, names, nil
 }
 
-// tryRotate1PSIDTS 用哨兵 payload 换发 1PSIDTS。没 __Secure-1PSID 或距上次不足
-// 60 秒就跳过（不算失败）。
+// tryRotate1PSIDTS reemite 1PSIDTS con el payload centinela. Si no hay __Secure-1PSID o
+// han pasado menos de 60 segundos desde la última vez, se omite (no cuenta como fallo).
 func tryRotate1PSIDTS(id int64, cookie, proxyURL string) (string, []string, error) {
 	if cookieValue(cookie, "__Secure-1PSID") == "" {
 		return cookie, nil, nil
 	}
 	if ok, _ := allow1PSIDTSRotate(id); !ok {
-		logf("[rotate] 账号 #%d 跳过 1PSIDTS 刷新（距上次不足 %s，避免 429）", id, min1PSIDTSInterval)
+		logf("[rotate] se omite el refresco de 1PSIDTS de la cuenta #%d (menos de %s desde la última vez, para evitar el 429)", id, min1PSIDTSInterval)
 		return cookie, nil, nil
 	}
 	c2, names, err := rotate1PSIDTS(cookie, proxyURL)
@@ -145,7 +155,8 @@ func allow1PSIDTSRotate(id int64) (bool, time.Duration) {
 }
 
 func note1PSIDTSAttempt(id int64, err error) {
-	// 成功、401/403、429 都记时间，避免紧接着再打。网络错误不记，允许立刻重试。
+	// Tanto el éxito como el 401/403 y el 429 registran el tiempo, para no volver a llamar
+	// justo después. Los errores de red no se registran, lo que permite reintentar de inmediato.
 	if err != nil {
 		msg := err.Error()
 		if !strings.Contains(msg, "HTTP 401") &&
@@ -159,7 +170,8 @@ func note1PSIDTSAttempt(id int64, err error) {
 	psidtsMu.Unlock()
 }
 
-// rotate1PSIDTS POST 哨兵 payload，把响应里的 Set-Cookie 合并回完整 cookie 串。
+// rotate1PSIDTS hace POST del payload centinela y fusiona el Set-Cookie de la respuesta en la
+// cadena de cookie completa.
 func rotate1PSIDTS(cookie, proxyURL string) (string, []string, error) {
 	subset := cookieSubset(cookie, rotate1PSIDTSCookies)
 	headers := map[string]string{
@@ -178,17 +190,18 @@ func rotate1PSIDTS(cookie, proxyURL string) (string, []string, error) {
 		return cookie, nil, err
 	}
 	if status == 401 || status == 403 {
-		return cookie, nil, fmt.Errorf("RotateCookies 1PSIDTS 返回 HTTP %d（Chrome 导出的 cookie 可能受设备绑定限制，建议用 Firefox 重新导出）: %s",
+		return cookie, nil, fmt.Errorf("RotateCookies 1PSIDTS devolvió HTTP %d (la cookie exportada de Chrome puede estar limitada por la vinculación de dispositivo; se recomienda volver a exportarla con Firefox): %s",
 			status, truncate(string(respBody), 120))
 	}
 	if status != 200 {
-		return cookie, nil, fmt.Errorf("RotateCookies 1PSIDTS 返回 HTTP %d: %s", status, truncate(string(respBody), 120))
+		return cookie, nil, fmt.Errorf("RotateCookies 1PSIDTS devolvió HTTP %d: %s", status, truncate(string(respBody), 120))
 	}
 	merged := mergeSetCookie(cookie, setCookie)
 	return merged, setCookieNames(setCookie), nil
 }
 
-// rotateSIDCC 走浏览器 iframe 那条：GET 轮转页拿会话 id，再 POST [658, id]。
+// rotateSIDCC usa la ruta del iframe del navegador: GET de la página de rotación para obtener
+// el id de sesión y luego POST [658, id].
 func rotateSIDCC(cookie, proxyURL string) (string, time.Duration, []string, error) {
 	id, interval, pageSet, err := fetchRotateParams(cookie, proxyURL)
 	if err != nil {
@@ -204,7 +217,7 @@ func rotateSIDCC(cookie, proxyURL string) (string, time.Duration, []string, erro
 		return cookie, 0, nil, err
 	}
 	if status != 200 {
-		return cookie, 0, nil, fmt.Errorf("RotateCookies 返回 HTTP %d: %s", status, truncate(string(respBody), 120))
+		return cookie, 0, nil, fmt.Errorf("RotateCookies devolvió HTTP %d: %s", status, truncate(string(respBody), 120))
 	}
 	cookie = mergeSetCookie(cookie, setCookie)
 	names := setCookieNames(append(append([]string{}, pageSet...), setCookie...))
@@ -224,7 +237,7 @@ func uniqueKeepOrder(in []string) []string {
 	return out
 }
 
-// setCookieNames 把 Set-Cookie 头里的名字抽出来去重，只用于日志。
+// setCookieNames extrae y deduplica los nombres de las cabeceras Set-Cookie; solo se usa para el log.
 func setCookieNames(headers []string) []string {
 	seen := map[string]bool{}
 	var out []string
@@ -243,20 +256,21 @@ func setCookieNames(headers []string) []string {
 	return out
 }
 
-// fetchRotateParams 抓 RotateCookiesPage，取会话标识、服务端指定的间隔，以及这一发
-// 自己带回的 Set-Cookie。
+// fetchRotateParams descarga RotateCookiesPage y obtiene el identificador de sesión, el
+// intervalo indicado por el servidor y el Set-Cookie que trae esta misma petición.
 func fetchRotateParams(cookie, proxyURL string) (string, time.Duration, []string, error) {
 	status, setCookie, body, err := rotateGet(rotatePageURL, cookie, proxyURL)
 	if err != nil {
 		return "", 0, nil, err
 	}
 	if status != 200 {
-		return "", 0, nil, fmt.Errorf("取轮转页返回 HTTP %d", status)
+		return "", 0, nil, fmt.Errorf("la descarga de la página de rotación devolvió HTTP %d", status)
 	}
 	m := rotateInitRe.FindSubmatch(body)
 	if m == nil {
-		// 页面拿到了却没有 init(...)，最可能是 cookie 已失效跳到了登录页。
-		return "", 0, nil, fmt.Errorf("轮转页里没有 init(...)（cookie 可能已失效）")
+		// La página se obtuvo pero no tiene init(...): lo más probable es que la cookie ya no
+		// valga y haya saltado a la página de inicio de sesión.
+		return "", 0, nil, fmt.Errorf("la página de rotación no tiene init(...) (puede que la cookie ya no valga)")
 	}
 	id := string(m[1])
 	interval := defaultRotateInterval
@@ -266,14 +280,16 @@ func fetchRotateParams(cookie, proxyURL string) (string, time.Duration, []string
 	return id, interval, setCookie, nil
 }
 
-// 下面两组 header 逐项抄自抓包（wireHeaders，不是 headers —— 后者不含 cookie）。
-// 抓包里还有 sec-ch-ua-arch / -bitness / -form-factors / -full-version-list /
-// -model / -platform-version / -wow64 和 x-browser-* / x-client-data /
-// x-chrome-id-consistency-request，那些是 Chrome 自己贴的浏览器身份，我们贴了反而
-// 会跟 TLS 指纹对不上，所以不贴。
+// Los dos grupos de cabeceras siguientes están copiados punto por punto de una captura
+// (wireHeaders, no headers: esta última no incluye las cookies). En la captura también hay
+// sec-ch-ua-arch / -bitness / -form-factors / -full-version-list / -model /
+// -platform-version / -wow64 y x-browser-* / x-client-data /
+// x-chrome-id-consistency-request, pero esas son la identidad de navegador que pega el propio
+// Chrome; si las pegáramos nosotros, la huella TLS no cuadraría, así que no se ponen.
 
-// rotateGet 取轮转页。它在浏览器里是个 iframe 导航，所以 sec-fetch 那组跟普通
-// XHR 完全不同（dest=iframe / mode=navigate / site=same-site），别套用默认值。
+// rotateGet descarga la página de rotación. En el navegador es una navegación de iframe, así
+// que el grupo sec-fetch es totalmente distinto del de un XHR normal (dest=iframe /
+// mode=navigate / site=same-site); no le aplique los valores por defecto.
 func rotateGet(url, cookie, proxyURL string) (int, []string, []byte, error) {
 	return rotateDo("GET", url, map[string]string{
 		"Cookie":                    cookie,
@@ -288,7 +304,7 @@ func rotateGet(url, cookie, proxyURL string) (int, []string, []byte, error) {
 	}, nil, proxyURL)
 }
 
-// rotatePostHeaders 是 POST /RotateCookies 那一发的完整头，调用方只补 Cookie。
+// rotatePostHeaders son las cabeceras completas del POST /RotateCookies; quien llama solo añade la Cookie.
 func rotatePostHeaders() map[string]string {
 	return map[string]string{
 		"Accept":         "*/*",
@@ -309,10 +325,12 @@ func rotatePost(url string, headers map[string]string, body []byte, proxyURL str
 	return rotateDo("POST", url, headers, body, proxyURL)
 }
 
-// rotateDo 走跟正式请求同一个出口：保活从别的 IP 发，等于告诉上游这个会话在两处活动。
+// rotateDo sale por la misma salida que las peticiones normales: hacer el mantenimiento desde
+// otra IP equivale a decirle al upstream que esta sesión está activa en dos sitios distintos.
 //
-// 两条传输路径共用同一份 header。以前只有走代理那条调 applyChromeHeaders，直连那条
-// 连 User-Agent 都不发 —— 同一个账号在上游看来会因为走没走代理而呈现两种客户端。
+// Las dos rutas de transporte comparten las mismas cabeceras. Antes solo la que pasaba por el
+// proxy llamaba a applyChromeHeaders, y la de conexión directa ni siquiera enviaba User-Agent:
+// la misma cuenta se veía en el upstream como dos clientes según usara proxy o no.
 func rotateDo(method, url string, headers map[string]string, body []byte, proxyURL string) (
 	int, []string, []byte, error) {
 	var rdr io.Reader
@@ -361,10 +379,12 @@ func rotateDo(method, url string, headers map[string]string, body []byte, proxyU
 	return resp.StatusCode, resp.Header.Values("Set-Cookie"), b, err
 }
 
-// rotateAllAccounts 给池子里每个启用的账号做一次保活，返回下次该等多久。
+// rotateAllAccounts hace un mantenimiento a cada cuenta habilitada del pool y devuelve cuánto
+// hay que esperar la próxima vez.
 //
-// 失败**不计入健康度**：保活打的是 accounts.google.com，跟对话能不能用是两码事，
-// 网络抖一下就把号标成坏的，会让它在挑号时沉底，反而伤可用性。
+// Los fallos **no cuentan para la salud**: el mantenimiento llama a accounts.google.com y que
+// la conversación funcione o no es otra cosa; marcar la cuenta como mala por un temblor de red
+// la hundiría al seleccionar cuentas y dañaría la disponibilidad.
 func rotateAllAccounts() time.Duration {
 	next := defaultRotateInterval
 	for _, a := range accountList() {
@@ -373,7 +393,7 @@ func rotateAllAccounts() time.Duration {
 		}
 		iv, _, err := rotateAccount(a)
 		if err != nil {
-			logf("[rotate] 账号 #%d 保活失败: %v", a.ID, err)
+			logf("[rotate] fallo el mantenimiento de la cuenta #%d: %v", a.ID, err)
 			continue
 		}
 		if iv > 0 {

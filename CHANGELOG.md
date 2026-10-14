@@ -1,6 +1,6 @@
-# 更新日志
+# Registro de cambios
 
-本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
+Este proyecto sigue [Versionado semántico](https://semver.org/lang/zh-CN/).
 
 ## 4.21.0
 
@@ -17,518 +17,715 @@
 
 ## 4.20.2
 
-### 修复
+### Correcciones
 
-- **bl 自动跟随适配上游服务改名**。2026-10 上游把 bl 服务名从 `assistant-bard-web-server`
-  改成 `gemini-web-uiserver`（当前 `boq_gemini-web-uiserver_20261007.01_p0`）。校验正则原来
-  把服务名钉死，改名后自动跟随会把抓到的新值当"形状不对"拒掉、永远回退到配置里那个旧 bl。
-  放宽成只校验 `boq_<服务名>_<日期>.<版本>_p<数字>` 的总体形状，服务名随它改，兜底值也更到
-  当前。新旧两个 bl 实测都仍可用（端点路径没变），所以不影响在用的部署，只是让自动跟随恢复正常。
+- **El seguimiento automático de bl se adapta al cambio de nombre del servicio upstream**. En 2026-10
+  el upstream renombró el servicio bl de `assistant-bard-web-server`
+  a `gemini-web-uiserver` (actualmente `boq_gemini-web-uiserver_20261007.01_p0`). La regex de
+  validación antes fijaba el nombre del servicio, así que tras el cambio de nombre el seguimiento
+  automático rechazaba el nuevo valor capturado por "forma incorrecta" y volvía siempre al bl viejo
+  de la configuración. Se relajó para validar solo la forma general
+  `boq_<nombreServicio>_<fecha>.<versión>_p<número>`, dejando que el nombre del servicio cambie
+  libremente, y el valor de reserva también se actualizó a la fecha actual. Los bl viejo y nuevo
+  siguen funcionando en pruebas reales (la ruta del endpoint no cambió), así que no afecta a los
+  despliegues en uso; solo restaura el funcionamiento del seguimiento automático.
 
 ## 4.20.1
 
-### 修复
+### Correcciones
 
-- **RPH 补上「0=不限」的显示，跟并发 / RPM 对齐**（issue #32 #33）。并发和 RPM 都做了
-  0=不限（设置页 hint 写了、概览「距离封禁红线」的用量后面显示 ∞），RPH 两处都漏了——
-  hint 没写、概览 note 行没列 RPH，设成 0 时看不出是不限。补齐。纯显示，后端三者本就一致。
+- **Se añade a RPH la visualización "0=sin límite", alineándola con concurrencia / RPM**
+  (issues #32 #33). Tanto concurrencia como RPM ya aplicaban 0=sin límite (aparece en el hint de
+  la página de ajustes y, en el resumen "distancia a la línea roja de bloqueo", el uso se muestra
+  como ∞), pero en RPH faltaban ambos sitios: el hint no lo decía y la línea note del resumen no
+  listaba RPH, así que al ponerlo a 0 no se veía que fuera sin límite. Completado. Es solo
+  visualización; el backend ya era consistente en los tres.
 
 ## 4.20.0
 
-### 新增
+### Añadido
 
-- **Cookie 池失效账号标红**（issue #18）。账号鉴权在失败（`fail_count>0`，即 401/403）时，
-  面板状态列标红「疑似失效」、整行红底加左红条，顶部汇总「N 疑似失效」，一眼看出哪些该用
-  Firefox 重新导出。手动「检测」发现失效会立刻转红，检测通过或成功使用后自动转回正常。
-  （#18 里另提的内嵌 mini 浏览器不做，跟单二进制设计冲突。）
+- **Cuentas invalidadas del pool de cookies marcadas en rojo** (issue #18). Cuando la
+  autenticación de una cuenta falla (`fail_count>0`, es decir 401/403), la columna de estado del
+  panel la marca en rojo como "posiblemente inválida", la fila completa se pinta con fondo rojo y
+  barra roja a la izquierda, y el resumen superior muestra "N posiblemente inválidas", para ver de
+  un vistazo cuáles hay que reexportar con Firefox. La "detección" manual que descubre una
+  invalidez la pone en rojo de inmediato, y al pasar la detección o tras usarla con éxito vuelve
+  automáticamente a normal. (El mini navegador embebido que también se pedía en #18 no se hace,
+  porque choca con el diseño de binario único.)
 
 ## 4.19.0
 
-### 新增
+### Añadido
 
-- **Cookie 自动续命**（issue #6，合并 @s1oz 的 #25）。以前每 10 分钟的 `RotateCookies` 保活走
-  浏览器 iframe 那条 `[658, session_id]`，只刷 `SIDCC` / `*PSIDCC`，**换不了** `__Secure-1PSIDTS`
-  ——那才是约 30 分钟过期的短命票，所以登录号看着半小时就死、保活按钮也救不回来。现在先用哨兵
-  payload `[000,"-0000000000000000000"]`（只带 `__Secure-1PSID` + `__Secure-1PSIDTS` 两项子集，
-  多带会 401）换发一张新 `*PSIDTS`，再跑原来的 SIDCC 保活；导入后 15 秒先刷一次、同号 60 秒内
-  不重复打（避免 429）。
-- 实测（纯 HTTP、全程无浏览器）：不刷的静态号 20-30 分钟就死，开哨兵连续续命 3 小时不掉。
-  **Firefox 导出的 cookie 可以一直续**；Chrome 新版的设备绑定会话（DBSC）换发会 401，反复 401
-  就改用 Firefox 重新登录再导出。
+- **Renovación automática de cookies** (issue #6, fusionando el #25 de @s1oz). Antes, el keepalive
+  `RotateCookies` cada 10 minutos usaba la ruta `[658, session_id]` del iframe del navegador y solo
+  refrescaba `SIDCC` / `*PSIDCC`, **sin poder cambiar** `__Secure-1PSIDTS` —que es justo el ticket
+  de vida corta que caduca a los ~30 minutos, por eso la cuenta logueada parecía morir a la media
+  hora y el botón de keepalive tampoco la rescataba. Ahora primero se usa el payload centinela
+  `[000,"-0000000000000000000"]` (que solo lleva el subconjunto de dos entradas `__Secure-1PSID` +
+  `__Secure-1PSIDTS`; añadir más provoca 401) para canjear un nuevo `*PSIDTS`, y después se ejecuta
+  el keepalive de SIDCC original; tras importar se refresca una vez a los 15 segundos, y la misma
+  cuenta no vuelve a ejecutarlo en 60 segundos (para evitar el 429).
+- Comprobado en real (HTTP puro, sin navegador en todo momento): una cuenta estática sin refrescar
+  muere a los 20-30 minutos, mientras que con el centinela renovando continuamente aguanta 3 horas
+  sin caerse. **Las cookies exportadas de Firefox se pueden renovar indefinidamente**; la sesión
+  vinculada al dispositivo (DBSC) de las versiones nuevas de Chrome devuelve 401 al canjear, y si
+  aparece 401 repetidamente hay que volver a iniciar sesión con Firefox y reexportar.
 
 ## 4.18.0
 
-### 新增
+### Añadido
 
-- **匿名优先开关 `anon_first`**（issue #20）。默认关。开启后不需要登录态能力的请求
-  （纯文本、非思考、无工具、不带图）走匿名、不占用 cookie 账号，最大化省账号额度；
-  用到 3.1 Pro / 3.8 Flash / 扩展思考 / 生图·音乐·视频·画布 / 传文件这些才挑号。
-  在设置页勾选。
+- **Interruptor de preferencia anónima `anon_first`** (issue #20). Desactivado por defecto. Al
+  activarlo, las peticiones que no necesitan capacidad de sesión iniciada (texto puro, sin
+  pensamiento, sin herramientas, sin imágenes) van como anónimas y no ocupan cuentas con cookie,
+  maximizando el ahorro de cuota de cuentas; solo se elige cuenta cuando se usa 3.1 Pro / 3.8 Flash
+  / pensamiento extendido / generación de imagen·música·vídeo·lienzo / envío de archivos. Se marca
+  en la página de ajustes.
 
-### 修复
+### Correcciones
 
-- **cookie 挑号并发可能选中同一账号**。挑号是「SELECT 最久未用的号 + UPDATE 标记它
-  刚用过」两步，之前没串起来：并发请求会 SELECT 到同一个号、各自 UPDATE，同一瞬间
-  双双用它，轮转失效。加锁把这两步锁成原子。
+- **La selección de cuenta por concurrencia podía elegir la misma cuenta**. La selección son dos
+  pasos: "SELECT de la cuenta usada hace más tiempo + UPDATE para marcarla como recién usada", que
+  antes no estaban encadenados: peticiones concurrentes podían hacer SELECT de la misma cuenta,
+  cada una su UPDATE, y ambas usarla en el mismo instante, rompiendo la rotación. Se añade un lock
+  que vuelve atómicos los dos pasos.
 
 ## 4.17.0
 
-### 新增
+### Añadido
 
-- **面板设置页加「服务端多轮续接」(`multi_turn`) 开关**（issue #27）。这个运行时开关一直存在，
-  但之前只能靠手写 `config.json` 开——面板上没有、也不读环境变量，docker/群晖这类部署尤其别扭。
-  现在设置页直接勾。开启后同一串连续对话复用同一个 gemini 网页会话（按历史前缀认续接，命中只发
-  最新一句、历史留服务端），不再每发一条就新开一个会话。
+- **Interruptor "Continuación multi-turno en servidor" (`multi_turn`) en la página de ajustes del
+  panel** (issue #27). Este interruptor de tiempo de ejecución ya existía, pero antes solo se podía
+  activar escribiendo `config.json` a mano: no estaba en el panel ni leía variables de entorno, lo
+  que resultaba especialmente incómodo en despliegues tipo docker/Synology. Ahora se marca
+  directamente en la página de ajustes. Al activarlo, una misma cadena de conversación consecutiva
+  reutiliza la misma sesión web de gemini (reconoce la continuación por el prefijo del historial;
+  si acierta solo envía la última frase y deja el historial en el servidor), sin abrir una nueva
+  sesión por cada mensaje enviado.
 
-### 修复
+### Correcciones
 
-- **修 `multi_turn` 在面板点「保存并生效」后被静默重置成 `false`**。它是唯一没列进面板配置表单的
-  运行时字段，而保存走的是整体反序列化，表单没带的字段会被解成零值——所以只要在面板保存过一次，
-  `config.json` 里设的 `multi_turn` 也会被冲掉。列进表单一并修掉。
+- **Corregido que `multi_turn` se restableciera silenciosamente a `false` al pulsar "Guardar y
+  aplicar" en el panel**. Era el único campo de tiempo de ejecución que no aparecía en el
+  formulario de configuración del panel, y al guardar se hace una deserialización completa, de modo
+  que los campos que el formulario no incluye se deserializan a valor cero: así que basta guardar
+  una vez desde el panel para que el `multi_turn` configurado en `config.json` también se borre. Se
+  incluyó en el formulario y se corrigió junto con lo anterior.
 
 ## 4.16.0
 
-### 新增
+### Añadido
 
-- **`gemini-3.8-flash`（+ `-thinking`）**（issue #26）。Google 把原 3.7 Flash 那个 hex
-  （`56fdd199312815e2`）原地升成了 3.8——同 hex，服务端显示名从 `"3.7 Flash"` 变 `"3.8 Flash"`
-  （付费号 HAR 响应帧确认）。**付费 Gemini 账号专属**（不是灰度）：免费号仍降级成 3.5 Flash-Lite。
-  `gemini-3.7-flash` / `gemini-3.7-flash-thinking` 保留为别名（同 hex），老客户端不受影响。
+- **`gemini-3.8-flash` (+ `-thinking`)** (issue #26). Google ascendió el hex del antiguo 3.7 Flash
+  (`56fdd199312815e2`) a 3.8 en el mismo sitio: mismo hex, y el nombre mostrado por el servidor
+  pasó de `"3.7 Flash"` a `"3.8 Flash"` (confirmado por el frame de respuesta HAR de una cuenta de
+  pago). **Exclusivo de cuentas de pago de Gemini** (no es despliegue gradual): las cuentas
+  gratuitas siguen degradándose a 3.5 Flash-Lite. `gemini-3.7-flash` /
+  `gemini-3.7-flash-thinking` se mantienen como alias (mismo hex), sin afectar a los clientes
+  antiguos.
 ## 4.15.0
 
-### 新增
+### Añadido
 
-- **`/v1/videos` 端点**（issue #24）。OpenAI(Sora) 形状的异步视频生成：`POST /v1/videos`
-  {model, prompt} 建任务、立即返回 `{id, status}`；`GET /v1/videos/{id}` 轮询状态；
-  `GET /v1/videos/{id}/content` 完成后下 MP4。底层复用 `gemini-video` 那条生成链（要登录态 Pro 号）。
-  视频要几十秒到几分钟，异步比 chat/completions 阻塞式更合适。原来 `/v1/chat/completions` +
-  `model=gemini-video`（返回 base64 data URL）仍保留可用。
+- **Endpoint `/v1/videos`** (issue #24). Generación asíncrona de vídeo con la forma de OpenAI(Sora):
+  `POST /v1/videos` {model, prompt} crea la tarea y devuelve inmediatamente `{id, status}`;
+  `GET /v1/videos/{id}` consulta el estado; `GET /v1/videos/{id}/content` descarga el MP4 al
+  terminar. Por debajo reutiliza la cadena de generación de `gemini-video` (requiere cuenta Pro con
+  sesión iniciada). El vídeo tarda de decenas de segundos a varios minutos, así que lo asíncrono
+  encaja mejor que el `chat/completions` bloqueante. Se conserva disponible el anterior
+  `/v1/chat/completions` + `model=gemini-video` (que devuelve una data URL base64).
 
 ## 4.14.0
 
-### 新增
+### Añadido
 
-- **MySQL / PostgreSQL 支持**（issue #22）。设 `SQL_DSN` 环境变量即可，不设仍默认 SQLite、无需改动。
-  `SQL_DSN=mysql://user:pass@host:3306/db` 或 `postgres://user:pass@host:5432/db?sslmode=disable`。
-  建表自动完成，三种库共用一套 schema；方言差异（`?`/`$N` 占位符、upsert、自增主键、TEXT 键列、
-  `IFNULL`/`COALESCE`）全收敛在 `dbdialect.go`，业务层 ~70 条查询不动。用真 mysql8 + pg16 各跑通验证。
+- **Soporte de MySQL / PostgreSQL** (issue #22). Basta con definir la variable de entorno
+  `SQL_DSN`; sin definirla sigue siendo SQLite por defecto, sin cambios necesarios.
+  `SQL_DSN=mysql://user:pass@host:3306/db` o `postgres://user:pass@host:5432/db?sslmode=disable`.
+  La creación de tablas se hace automáticamente y las tres bases comparten un mismo schema; las
+  diferencias de dialecto (placeholders `?`/`$N`, upsert, clave primaria autoincremental, columnas
+  clave TEXT, `IFNULL`/`COALESCE`) quedan todas concentradas en `dbdialect.go`, con las ~70
+  consultas de la capa de negocio intactas. Verificado ejecutando cada una con mysql8 y pg16
+  reales.
 
-### 修复
+### Correcciones
 
-- SSE 响应补 `X-Accel-Buffering: no`，避免流式经 nginx 一类反代被整体缓冲成一次性下发
-  （客户端直连本就是流式，仅「自己在前面架了反代」的部署需要）。注：issue #21 里 Dify 的
-  一次性输出不是这个原因——实测经 Dify 的 squid(ssrf_proxy) 是流式透传的，那问题在 Dify 侧。
+- Se añade `X-Accel-Buffering: no` a las respuestas SSE, para evitar que el streaming pase por
+  proxies inversos como nginx y se bufferee por completo en un único envío (el cliente conectado
+  directamente ya recibe streaming; solo lo necesitan los despliegues que tienen un proxy inverso
+  delante). Nota: la salida de una sola vez de Dify en la issue #21 no se debe a esto —en pruebas
+  reales, a través del squid (ssrf_proxy) de Dify el streaming se transmite tal cual; el problema
+  está del lado de Dify.
 
 ## 4.13.0
 
-### 新增
+### Añadido
 
-- **读视频**。客户端在 content 里传 `video_url` / `input_video`（data URL）即可让模型分析
-  视频内容，跟读图同一条上传路径（文件元组类型位 2=视频）。要 cookie（匿名引用被上游拒）。
-  实测传红→绿→蓝测试片、问依次哪三色，模型答「红、绿、蓝」——真逐帧看了。
-- **生视频**（`gemini-video`）。`inner[49]=11` 提交异步任务，轮询 hNvQHb 拿
-  `contribution.usercontent.google.com` 下载链，取回 MP4（base64 data URL）。实测「日落
-  海浪」出真 10 秒 720p H.264+AAC 视频。**要 Pro/付费号**（自报 3.7 Flash）；免费号被
-  Google 视频内容政策拒时会明确报错。生成要几十秒到几分钟，客户端记得配长超时。
-- **自动删会话**（issue #19，配置 `auto_delete_conversation`，默认关）。出完结果自动删掉
-  gemini.google.com 上留下的这条会话（rpc GzXR5e），免得账号里堆一堆。只登录态生效，
-  异步 best-effort 不影响响应。
+- **Lectura de vídeo**. El cliente puede pasar `video_url` / `input_video` (data URL) en content
+  para que el modelo analice el contenido del vídeo, siguiendo la misma ruta de subida que la
+  lectura de imágenes (el bit de tipo de la tupla de archivo 2 = vídeo). Requiere cookie (la
+  referencia anónima es rechazada por el upstream). Probado enviando un clip de prueba rojo→verde→
+  azul y preguntando cuáles eran los tres colores en orden; el modelo respondió "rojo, verde, azul"
+  —efectivamente lo vio fotograma a fotograma.
+- **Generación de vídeo** (`gemini-video`). `inner[49]=11` envía una tarea asíncrona y consulta
+  hNvQHb para obtener el enlace de descarga de `contribution.usercontent.google.com`, recuperando
+  el MP4 (data URL base64). Probado con "olas al atardecer", produjo un vídeo real de 10 segundos
+  720p H.264+AAC. **Requiere cuenta Pro/de pago** (se declara como 3.7 Flash); las cuentas
+  gratuitas reciben un error explícito cuando Google las rechaza según su política de contenido de
+  vídeo. La generación tarda de decenas de segundos a varios minutos, así que el cliente debe
+  configurar un timeout largo.
+- **Eliminación automática de conversaciones** (issue #19, config `auto_delete_conversation`,
+  desactivada por defecto). Tras obtener el resultado, elimina automáticamente la conversación
+  dejada en gemini.google.com (rpc GzXR5e), para no acumular un montón en la cuenta. Solo tiene
+  efecto con sesión iniciada; es asíncrono best-effort y no afecta a la respuesta.
 
 ## 4.12.0
 
-### 修复
+### Correcciones
 
-- **agentic 客户端的工具循环收敛**（承接 #15）。Codex 这类客户端的命令成功结果是一段
-  带「Process exited with code 0 / Output:（空）」的包装文本；写文件、设值这类命令没有
-  stdout，弱模型（尤其匿名 3.6 Flash）把「无输出」当成「没干成」，于是换个写法一遍遍重试
-  ——实测「写 hello 到 a.txt」一个任务试了 26 种命令、90 秒不收敛（文件其实第一次就写对了）。
-  现在把工具结果压成一行清爽的成功/失败信号（✅ exit 0 并说明无输出是正常的、别重跑；
-  ❌ exit N），并在指令里加终止条款（看到成功就停、别重试同一件事）。实测同一任务从
-  26-27 轮降到 2-4 轮、且正常给出最终答复。只加终止条款不配清爽信号无效，两者要一起。
+- **Convergencia del bucle de herramientas en clientes agénticos** (a raíz de #15). Para clientes
+  como Codex, el resultado exitoso de un comando es un texto envoltorio con "Process exited with
+  code 0 / Output: (vacío)"; comandos como escribir archivos o asignar valores no tienen stdout, y
+  los modelos débiles (sobre todo el 3.6 Flash anónimo) interpretan "sin salida" como "no se hizo",
+  así que prueban una y otra vez con otra sintaxis —en pruebas reales, la tarea "escribir hello en
+  a.txt" probó 26 comandos distintos y no convergió en 90 segundos (el archivo en realidad se había
+  escrito bien a la primera). Ahora el resultado de la herramienta se comprime en una señal
+  clara de éxito/fracaso en una línea (✅ exit 0 e indicando que la ausencia de salida es normal, no
+  reintentar; ❌ exit N), y se añade una cláusula de terminación a las instrucciones (al ver éxito,
+  parar; no reintentar lo mismo). En pruebas reales la misma tarea bajó de 26-27 rondas a 2-4 y
+  devolvió correctamente la respuesta final. Añadir solo la cláusula de terminación sin la señal
+  clara no sirve; ambas van juntas.
 
 ## 4.11.0
 
-### 修复
+### Correcciones
 
-- **带 tools 的请求「已读乱回」**（issue #15）。agentic 客户端（Codex 等）发来的请求，中间
-  夹着几十 KB 客户端自带的开发者提示，里面写着「emit function calls to run terminal
-  commands」这类原生工具框架措辞，把我们放在最顶部的 ```tool_call``` 格式指令冲没——模型
-  于是答「我没有工具 / 无法访问文件系统」或答非所问。现在 `buildPrompt` 在所有消息之后
-  （紧挨用户问题）再锚一次工具格式（含一个行为化示例，明确唯一执行通道是 ```tool_call```、
-  不许写 ```powershell 代码块给用户看、一次只发一个），并放宽围栏正则以容错模型吐的 inline
-  变体（无换行）。实测 Codex 真实客户端下工具正常调用；有 tools 时普通对话不误触发。
-- **纯代码产物响应不再返空导致 502**。问数学 / 算式时模型直接跑代码、整条回复只有代码执行
-  产物，清洗掉 `?code_reference/stdout` 标记后为空，会被当「无内容帧」报 502。现在清洗后为空
-  时保留代码和结果、当普通代码块返回。
+- **Peticiones con tools con "respuesta leída pero contestada mal"** (issue #15). Las peticiones
+  enviadas por clientes agénticos (Codex, etc.) llevan en medio decenas de KB del prompt de
+  desarrollador propio del cliente, que incluye frases del marco de herramientas nativo como
+  "emit function calls to run terminal commands", que ahogan la instrucción de formato
+  ```tool_call``` que ponemos arriba del todo; el modelo entonces responde "no tengo herramientas /
+  no puedo acceder al sistema de archivos" o contesta cosas que no vienen al caso. Ahora
+  `buildPrompt` vuelve a anclar el formato de herramientas después de todos los mensajes (justo
+  junto a la pregunta del usuario) (con un ejemplo de comportamiento, dejando claro que el único
+  canal de ejecución es ```tool_call```, que no debe escribir bloques de ```powershell para que los
+  vea el usuario, y que solo se envía uno a la vez), y se relaja la regex delimitadora para tolerar
+  las variantes inline (sin salto de línea) que el modelo pueda emitir. En pruebas reales, con el
+  cliente real de Codex las herramientas se invocan correctamente; y con tools presentes, la
+  conversación normal no se dispara por error.
+- **Las respuestas compuestas solo de código ya no vuelven vacías ni provocan 502**. Al preguntar
+  matemáticas / operaciones, el modelo ejecuta código directamente y toda la respuesta es solo el
+  producto de la ejecución de código; tras limpiar las marcas `?code_reference/stdout` queda vacía
+  y se interpreta como "frame sin contenido" devolviendo 502. Ahora, cuando tras limpiar queda
+  vacía, se conservan el código y el resultado y se devuelve como bloque de código normal.
 
 ## 4.10.0
 
-### 新增
+### Añadido
 
-- **`gemini-canvas`（画布）**。生成 immersive 交互 HTML 文档。跟生图/音乐不同，产物是
-  HTML、**内联在响应里**（一个 ```html 代码块），不用另外下载。要 cookie，没配时不暴露。
-  实测返回完整的 `<!DOCTYPE html>…</html>` 交互网页（含脚本），客户端拿到后可提取渲染。
+- **`gemini-canvas` (lienzo)**. Genera documentos HTML interactivos inmersivos. A diferencia de la
+  generación de imagen/música, el producto es HTML y **va inline en la respuesta** (un bloque de
+  código ```html), sin necesidad de descarga aparte. Requiere cookie; no se expone si no está
+  configurado. En pruebas reales devuelve una página web interactiva completa `<!DOCTYPE html>…
+  </html>` (con scripts), que el cliente puede extraer y renderizar.
 
 ## 4.9.0
 
-### 新增
+### Añadido
 
-- **管理面板中英切换**（issue #13）。顶栏加了个语言按钮，默认中文，点一下切英文
-  （记在 localStorage）。约 190 条词条覆盖导航、KPI、表头、按钮、下拉、状态徽章、
-  运行时配置字段与提示、错误分类、连通性诊断、弹窗、部署表。带数字变量的插值句
-  （如"还能再打约 N 次"）保持中文。
+- **Conmutación chino-inglés del panel de administración** (issue #13). Se añadió un botón de
+  idioma en la barra superior, por defecto chino, que al pulsarlo cambia a inglés (se guarda en
+  localStorage). Unos 190 términos cubren navegación, KPI, cabeceras de tabla, botones,
+  desplegables, insignias de estado, campos y pistas de configuración en tiempo de ejecución,
+  clasificación de errores, diagnóstico de conectividad, modales y tabla de despliegue. Las frases
+  con interpolación de variables numéricas (como "aún se puede llamar unas N veces") se mantienen
+  en chino.
 
 ## 4.8.0
 
-### 修复
+### Correcciones
 
-- **生图取原图**（issue #14）。plain gg-dl 链默认下来是 ~500px（512×279）的缩略图；
-  在链尾加 `=s0` 取原始尺寸后拿到全分辨率（实测 1408×768）。格式仍是 PNG。
-- **媒体模型不再被多轮路径吞掉产物**。4.5.0 起把多轮 gate 放宽到带 tools 的请求时，
-  把媒体模型（生图/音乐）也放进了多轮路径，而多轮只处理文本——于是开了 `multi_turn`
-  再打 `gemini-image` / `gemini-music` 只回一句占位文本、没有图/乐。现在媒体模型始终
-  走带产物取回的那条路，跟 `multi_turn` 开关无关。
+- **Obtener la imagen original al generar imágenes** (issue #14). La cadena plain gg-dl descargaba
+  por defecto una miniatura de ~500px (512×279); añadiendo `=s0` al final de la cadena se obtiene
+  el tamaño original a resolución completa (1408×768 en pruebas reales). El formato sigue siendo
+  PNG.
+- **Los modelos multimedia ya no pierden su producto por la ruta multi-turno**. Desde 4.5.0, al
+  ampliar la condición multi-turno a las peticiones con tools, se metieron también los modelos
+  multimedia (imagen/música) en la ruta multi-turno, y esta solo procesa texto, así que al activar
+  `multi_turn` y luego llamar a `gemini-image` / `gemini-music` solo se devolvía un texto de
+  relleno, sin imagen/música. Ahora los modelos multimedia recorren siempre la vía que recupera el
+  producto, con independencia del interruptor `multi_turn`.
 
 ## 4.7.0
 
-### 新增
+### Añadido
 
-- **`gemini-3.7-flash`（含 `-thinking` 版）**。Gemini 网页端按账号灰度放出 3.7 Flash，
-  接进来。要配 cookie，且**账号得已灰度到 3.7**，否则降级成 3.5 Flash-Lite（跟 3.1 Pro
-  一样，没 cookie / 没灰度就不给假成功）。
+- **`gemini-3.7-flash` (incluida la versión `-thinking`)**. El frontend web de Gemini habilitó 3.7
+  Flash por despliegue gradual según cuenta, y se integra. Requiere cookie configurada y **que la
+  cuenta ya tenga el despliegue gradual a 3.7**; de lo contrario se degrada a 3.5 Flash-Lite (igual
+  que con 3.1 Pro: sin cookie / sin despliegue gradual no se da éxito falso).
 
-  hex 用 3.7 条目的主 hex `56fdd199312815e2`（两个独立已灰度账号的 otAQ7b 清单里都是它、
-  有 3.7 号的用户实测发它回报 "3.7 Flash"）。没用 compat 列表里的 `797f3d0293f288ad`——
-  那是「当前 Flash」泛指针，老批次号发它拿到的是 3.6，会拿 3.6 冒充 3.7。
+  Para el hex se usa el hex principal de la entrada 3.7 `56fdd199312815e2` (en el listado otAQ7b de
+  dos cuentas independientes con el despliegue gradual aparecía ese mismo, y los usuarios con
+  cuenta 3.7 que lo probaron reportaron "3.7 Flash"). No se usó el `797f3d0293f288ad` de la lista
+  compat, que es el puntero genérico a "el Flash actual", y con el que un número de lote antiguo
+  devuelve 3.6, haciendo pasar 3.6 por 3.7.
 
 ## 4.6.0
 
-### 修复
+### Correcciones
 
-- **流式 `tool_calls` 补 `index` 字段**（issue #10）。流式 delta 里的每个 tool_call 少了
-  `index`，OpenAI 流式规范要求客户端靠它把分片的 tool_call 拼起来；漏了导致部分客户端
-  拼不起来。现在按顺序给每个补上。
+- **Se añade el campo `index` a los `tool_calls` en streaming** (issue #10). Cada tool_call del
+  delta en streaming carecía de `index`, y la especificación de streaming de OpenAI exige que el
+  cliente lo use para ensamblar los tool_call fragmentados; su ausencia hacía que algunos clientes
+  no pudieran ensamblarlos. Ahora se añade a cada uno en orden.
 
 ## 4.5.0
 
-### 修复
+### Correcciones
 
-- **`/v1/responses` 流式补全 item 生命周期事件**。以前只发 `response.created` 就直接推
-  `output_text.delta`，漏了先用 `response.output_item.added` + `content_part.added` 声明
-  item。严格的 Responses 客户端（Codex、zcode 等）收到不合规的事件序列会中途报错
-  （"OutputTextDelta without active item" / "Turn execution failed"），而 HTTP 请求本身
-  返回 200、chat 模式不受影响，所以面板看着正常、很难定位。现在补齐了 message 和
-  function_call 两种 item 的 added → content_part → done 完整生命周期。
+- **Se completan los eventos del ciclo de vida del item en el streaming de `/v1/responses`**.
+  Antes solo se enviaba `response.created` y se empujaba directamente `output_text.delta`, sin
+  declarar antes el item con `response.output_item.added` + `content_part.added`. Los clientes
+  estrictos de Responses (Codex, zcode, etc.) dan error a mitad al recibir una secuencia de eventos
+  no conforme ("OutputTextDelta without active item" / "Turn execution failed"), mientras que la
+  petición HTTP en sí devuelve 200 y el modo chat no se ve afectado, por lo que el panel parece
+  normal y es difícil de localizar. Ahora se completa el ciclo de vida íntegro
+  added → content_part → done tanto para el item de tipo message como para el de function_call.
 
-### 新增
+### Añadido
 
-- **可选多轮（`multi_turn`，默认关）**。开启后走 Gemini 原生 conversation_id 服务端续接：
-  客户端每轮重发全历史，服务端按"除最后一条外的历史"做指纹识别续接，命中就只发最后一句
-  新消息、历史留 Google 服务端，绕开单请求约 13 万字节的墙。登录 / 匿名都可用（匿名首轮
-  就地 GET /app 拿 session cookie 当会话载体，不需要账号）。带 tools 的 agentic 客户端
-  也走这条。
+- **Multi-turno opcional (`multi_turn`, desactivado por defecto)**. Al activarlo se usa la
+  continuación en servidor nativa de Gemini por conversation_id: el cliente reenvía todo el
+  historial en cada turno, y el servidor identifica la continuación mediante huella de "el
+  historial menos el último mensaje"; si acierta, solo se envía el último mensaje nuevo y el
+  historial se queda en los servidores de Google, evitando el muro de ~130 mil bytes por petición.
+  Funciona tanto con sesión iniciada como en anónimo (en el primer turno anónimo se hace GET /app
+  in situ para obtener la session cookie como soporte de la conversación, sin necesidad de cuenta).
+  Los clientes agénticos con tools también recorren esta vía.
 
-  实测：两轮各 110KB、全量重发会撞字节墙报 400 的场景，续接只发新消息 → 200，长会话
-  不再撞墙。注意多轮**不放大模型的上下文窗口**——超出窗口的早期内容仍会被挤出（滑动窗口
-  留最近），它解决的是"长对话不撞单请求墙 + 保住最近上下文"，不是"喂超长文档"。
+  En pruebas reales: en un escenario con dos turnos de 110KB cada uno en el que el reenvío completo
+  chocaría con el muro de bytes y daría 400, la continuación solo envía el mensaje nuevo → 200, y
+  las conversaciones largas ya no chocan con el muro. Ojo: el multi-turno **no amplía la ventana de
+  contexto del modelo** —el contenido antiguo que excede la ventana se sigue expulsando (la ventana
+  deslizante conserva lo más reciente); lo que resuelve es "conversaciones largas que no chocan con
+  el muro de una sola petición + conservar el contexto reciente", no "alimentar con documentos
+  ultra largos".
 
 ## 4.4.0
 
-### 新增
+### Añadido
 
-- **生图 / 音乐**。两个新模型 `gemini-image`（Nano Banana）和 `gemini-music`
-  （Lyria，约 30 秒），走 `/v1/chat/completions`。产物字节以 **base64 data URL** 直接
-  塞进返回的 `content`（图片 `![]`、音频 `[]`），不转外链——外链要 cookie 才下得到，
-  客户端拿不到。都要登录态，没配 cookie 时不进 `/v1/models`。
+- **Generación de imagen / música**. Dos modelos nuevos, `gemini-image` (Nano Banana) y
+  `gemini-music` (Lyria, ~30 segundos), que van por `/v1/chat/completions`. Los bytes del producto
+  se insertan directamente como **data URL base64** en el `content` devuelto (imagen `![]`, audio
+  `[]`), sin convertir a enlace externo —un enlace externo requiere cookie para descargarse y el
+  cliente no la tiene. Ambos requieren sesión iniciada y no aparecen en `/v1/models` si no hay
+  cookie configurada.
 
-  产物取回卡了很久的下载 403，根因三条（抓包 + 实测确认）：下载 host 只认 `.google.com`
-  域那 18 项 cookie（整串塞过去连 accounts 主机专属那几项一起发就 403）；图片链跨域
-  302，客户端默认不把 Cookie 带到新域（手动跟随、每跳重发解决）；图片响应给的是
-  `gg-dl` plain 链、GET 只回 text/plain 指针，真图要改成 `rd-gg-dl` 前缀。
+  La recuperación del producto se atascó mucho tiempo en un 403 de descarga; la causa raíz son tres
+  cosas (confirmadas con captura de tráfico + pruebas reales): el host de descarga solo reconoce
+  las 18 cookies del dominio `.google.com` (pasar la cadena entera incluyendo las específicas del
+  host accounts provoca 403); la cadena de imagen cruza de dominio con 302, y el cliente por
+  defecto no lleva la Cookie al nuevo dominio (se resuelve siguiéndola manualmente y reenviándola
+  en cada salto); y la respuesta de imagen devuelve la cadena plain `gg-dl`, donde GET solo
+  devuelve un puntero text/plain, y la imagen real requiere cambiar al prefijo `rd-gg-dl`.
 
-  base64 不计进 output token——一张图上百万字符，按它计费等于让用户为二进制买单。
+  base64 no cuenta para los output token —una imagen tiene millones de caracteres, y contarla
+  equivaldría a hacer que el usuario pague por binario.
 
-  实测：`gemini-image` → 512×279 PNG（106KB，可解码）；`gemini-music` → 744KB 合法 MP3。
+  En pruebas reales: `gemini-image` → PNG de 512×279 (106KB, decodificable); `gemini-music` →
+  MP3 válido de 744KB.
 
 ## 4.3.0
 
-### 新增
+### Añadido
 
-- **MCP server（web_search）**。除了 OpenAI 接口，同一个进程、同一个端口现在还挂了一个
-  MCP server 在 `/mcp` 上，把 Gemini 网页端的联网搜索暴露成一个 `web_search` 工具，
-  让 Claude Desktop / Claude Code / Cursor 这类 MCP 客户端「用 Gemini 去搜网」，
-  返回合成答案 + 来源链接。
+- **Servidor MCP (web_search)**. Además de la interfaz OpenAI, ahora el mismo proceso y el mismo
+  puerto también montan un servidor MCP en `/mcp`, que expone la búsqueda en internet del frontend
+  web de Gemini como una herramienta `web_search`, permitiendo a clientes MCP como Claude Desktop /
+  Claude Code / Cursor "buscar en internet con Gemini", devolviendo una respuesta sintetizada +
+  enlaces a las fuentes.
 
-  传输走 HTTP（Streamable HTTP），部署成服务器后远程客户端连 URL 就能用，复用后端的
-  账号池 / 代理池 / 限流；匿名即可搜，不必挂 cookie。用同一把 API key 鉴权
-  （`Authorization: Bearer <key>`）。手写 JSON-RPC 2.0，不引第三方 SDK。
+  El transporte es HTTP (Streamable HTTP); una vez desplegado como servidor, los clientes remotos
+  solo necesitan conectarse a la URL, reutilizando el pool de cuentas / pool de proxies / rate
+  limiting del backend; se puede buscar en anónimo, sin necesidad de cookie. Se autentica con la
+  misma API key (`Authorization: Bearer <key>`). JSON-RPC 2.0 escrito a mano, sin dependencias de
+  SDK de terceros.
 
-  客户端配置见 README 的「MCP」一节。`web_search(query)` 返回答案，末尾附 `Sources:`
-  来源清单。
+  La configuración del cliente está en la sección "MCP" del README. `web_search(query)` devuelve la
+  respuesta, con la lista de fuentes `Sources:` al final.
 
-- **解析联网搜索的来源**。以前只返回答案文本，把 grounding 来源丢了；现在从响应帧里
-  抠出每条来源的 url / 标题 / 摘要，去掉 URL 尾部的 `#:~:text=` 片段锚。当前用在 MCP
-  的 `web_search` 上，OpenAI 接口的响应不受影响。
+- **Análisis de las fuentes de la búsqueda en internet**. Antes solo se devolvía el texto de la
+  respuesta, perdiendo las fuentes de grounding; ahora se extraen de los frames de respuesta la url
+  / título / resumen de cada fuente, eliminando el ancla de fragmento `#:~:text=` del final de la
+  URL. Actualmente se usa en el `web_search` del MCP; la respuesta de la interfaz OpenAI no se ve
+  afectada.
 
 ## 4.2.0
 
-### 新增
+### Añadido
 
-- **扩展思考：三个模型都能开**。新增 `gemini-3.6-flash-thinking` /
-  `gemini-3.5-flash-lite-thinking` / `gemini-3.1-pro-thinking`，服务端回报的模型名
-  带 `Extended`，思考链实测 2467 / 1059 / 583 字符（对应普通版 0 / 0 / 268）。
-  跟 3.1 Pro 一样只在挂了 cookie 时暴露 —— 匿名请求带上这个开关会被服务端静默忽略
-  （用完整 header 复测过，不是我们发漏了）。
+- **Pensamiento extendido: los tres modelos pueden activarlo**. Se añaden
+  `gemini-3.6-flash-thinking` / `gemini-3.5-flash-lite-thinking` / `gemini-3.1-pro-thinking`; el
+  nombre de modelo reportado por el servidor lleva `Extended`, y la cadena de pensamiento medida en
+  real dio 2467 / 1059 / 583 caracteres (frente a 0 / 0 / 268 en las versiones normales). Igual que
+  con 3.1 Pro, solo se expone cuando hay cookie configurada —las peticiones anónimas con este
+  interruptor son ignoradas silenciosamente por el servidor (reprobado con el header completo, no
+  es que lo enviemos mal).
 
-  它是网页 UI 上「扩展思考」那个开关，跟模型正交，不是三个额外的模型。
+  Es el interruptor "pensamiento extendido" de la UI web, ortogonal al modelo, no tres modelos
+  adicionales.
 
-  **开关在模型 header 里，不在 payload。** 我们原来只发 5 个元素的最小形式
-  `[1,null,null,null,"<hex>"]`，浏览器发的是 18 个元素，下标 14 = 模型 MODE、
-  下标 15 = 思考位。只填 payload 里的 `inner[80]=2` 实测三个模型思考链全是 0 字符，
-  补上 header 才生效 —— 跟模型选择本身「header 压过 inner[79]」是同一个规律。
+  **El interruptor está en el header del modelo, no en el payload.** Antes solo enviábamos la forma
+  mínima de 5 elementos `[1,null,null,null,"<hex>"]`, mientras que el navegador envía 18 elementos,
+  con el índice 14 = MODE del modelo y el índice 15 = bit de pensamiento. Rellenar solo el
+  `inner[80]=2` del payload dio en pruebas reales cadenas de pensamiento de 0 caracteres en los
+  tres modelos; solo surte efecto al completar el header —la misma regla que en la propia selección
+  de modelo, donde "el header pesa más que inner[79]".
 
-  配套：`inner` 从 80 槽扩到 97 槽（浏览器就是 97-98 槽，`inner[80]` 在 80 长度的
-  数组里连位置都没有）；补发 `x-goog-ext-525005358-jspb` 以及固定值的
-  `x-goog-ext-73010989-jspb` / `-73010990-jspb`；补 `inner[91]` / `inner[96]`。
-  补完之后跟浏览器逐槽比对只差 `[3,4]` —— botguard token 和它配对的 nonce，
-  那两个服务端不认我们算的，是故意不发的。
+  Complementos: `inner` se amplió de 80 a 97 ranuras (el navegador usa 97-98 ranuras, y `inner[80]`
+  ni siquiera tiene posición en un array de longitud 80); se añaden `x-goog-ext-525005358-jspb` y
+  los de valor fijo `x-goog-ext-73010989-jspb` / `-73010990-jspb`; se añaden `inner[91]` /
+  `inner[96]`. Tras completarlo, la comparación ranura a ranura con el navegador solo difiere en
+  `[3,4]` —el token de botguard y su nonce emparejado—, que el servidor no reconoce si los
+  calculamos nosotros y por eso se omiten a propósito.
 
-### 修复
+### Correcciones
 
-- **死号自动停用**：连续 3 次鉴权失败（只有 401/403 算）自动改成 disabled。以前
-  `fail_count` 只累加不处理，而挑号是 `ORDER BY fail_count ASC` —— 坏号排在最后，
-  但池子里只剩坏号时照样会被选中，于是每个请求都要先为它付一次 XSRF 往返才轮到
-  报错。停用不删除：cookie 是用户导入的数据，判断可能出错，留着让用户自己决定。
-- **刷新 cookie 前校验身份**：合并 Set-Cookie 后如果 `SAPISID` 或 `__Secure-1PSID`
-  变了就整个丢弃不写。不校验的话，上游若在响应里换掉整套会话，A 号的凭据会被静默
-  写进 B 号那一行 —— 面板上显示的还是原标签，实际发出去的是别人的会话。
-- **cookie 失效前先救一次**：取不到 XSRF token 时先强制轮转一次再重取，救不回来才
-  换下一个账号。以前直接换号，等于放弃一个可能只是 cookie 陈旧的号。
+- **Desactivación automática de cuentas muertas**: tras 3 fallos de autenticación consecutivos
+  (solo cuentan 401/403) se cambia automáticamente a disabled. Antes `fail_count` solo se acumulaba
+  y no se procesaba, y la selección de cuenta es `ORDER BY fail_count ASC` —las cuentas malas
+  quedan al final, pero cuando en el pool solo quedan cuentas malas se siguen seleccionando, así
+  que cada petición tenía que pagar primero un round-trip XSRF por ella antes de dar error.
+  Desactivar no elimina: la cookie son datos importados por el usuario, el juicio puede equivocarse,
+  y se deja para que el usuario decida.
+- **Validar la identidad antes de refrescar la cookie**: si tras fusionar el Set-Cookie cambian
+  `SAPISID` o `__Secure-1PSID`, se descarta todo sin escribir. Sin esta validación, si el upstream
+  cambiara todo el conjunto de sesión en la respuesta, las credenciales de la cuenta A se
+  escribirían silenciosamente en la fila de la cuenta B —el panel seguiría mostrando la etiqueta
+  original, pero lo que se envía de verdad es la sesión de otra.
+- **Rescatar la cookie una vez antes de darla por inválida**: cuando no se obtiene el XSRF token,
+  primero se fuerza una rotación y se reintenta; solo si no se puede rescatar se pasa a la
+  siguiente cuenta. Antes se cambiaba de cuenta directamente, abandonando una cuenta que
+  posiblemente solo tenía la cookie caducada.
 
 ## 4.1.1
 
-### 修复
+### Correcciones
 
-- **面板反代到子路径下打不开**（比如 `example.com/gemini/admin`）。`index.html` 里
-  30 处地址都是绝对的，浏览器按站点根解析，全落到 `example.com/admin/api/…`，前缀
-  丢了。现在改成相对地址。
+- **El panel no abre al hacer proxy inverso a un subdirectorio** (por ejemplo
+  `example.com/gemini/admin`). En `index.html` las 30 direcciones eran absolutas, el navegador las
+  resolvía contra la raíz del sitio y todas caían en `example.com/admin/api/…`, perdiéndose el
+  prefijo. Ahora son direcciones relativas.
 
-  顺带说清一个坑：**光改成相对地址不够**。相对地址是按文档 URL 的**目录**解析的，
-  而 `/admin` 和 `/admin/` 的目录差一层——`api/stats` 在 `/gemini/admin/` 下解析成
-  `/gemini/admin/api/stats`（对），在 `/gemini/admin` 下解析成 `/gemini/api/stats`
-  （错）。所以服务端会把 `/admin` 301 到 `admin/`，把文档 URL 统一到带斜杠的形式。
-  Location 用的是**相对值**——写成 `/admin/` 的话浏览器会跳到站点根，前缀又丢了。
+  De paso, aclarar una trampa: **no basta con cambiar a direcciones relativas**. Las direcciones
+  relativas se resuelven contra el **directorio** de la URL del documento, y `/admin` y `/admin/`
+  difieren en un nivel de directorio —`api/stats` bajo `/gemini/admin/` se resuelve como
+  `/gemini/admin/api/stats` (correcto), pero bajo `/gemini/admin` se resuelve como
+  `/gemini/api/stats` (incorrecto). Por eso el servidor redirige con 301 de `/admin` a `admin/`,
+  unificando la URL del documento con barra final. El Location usa un **valor relativo** —si se
+  escribiera `/admin/` el navegador saltaría a la raíz del sitio y volvería a perderse el prefijo.
 
-  反代不需要任何额外配置，把 `/前缀/` 转发到本服务的 `/` 即可。
+  El proxy inverso no necesita ninguna configuración adicional: basta reenviar `/prefijo/` al `/`
+  de este servicio.
 
 ## 4.1.0
 
-### ⚠️ 破坏性变更
+### ⚠️ Cambios incompatibles
 
-- **代理和 cookie 各自只剩一个入口**：代理只认「代理池」页面，cookie 只认
-  「Cookie 池」页面。「设置」页的「静态代理」输入框、cookie 卡片的单 cookie 输入
-  和 `/admin/api/cookie` 端点都已移除。
+- **El proxy y la cookie pasan a tener una sola entrada cada uno**: el proxy solo se reconoce en la
+  página "Pool de proxies", y la cookie solo en la página "Pool de cookies". El campo de entrada
+  "proxy estático" de la página "Ajustes", la entrada de cookie individual de la tarjeta de cookie
+  y el endpoint `/admin/api/cookie` se han eliminado.
 
-  为什么不是"多一个简单选项"而是必须删：这两条单例路径走的都是"ID=0"那条分支，
-  于是跟直连共用同一个限流 slot、健康度回写函数开头就 `id<=0 return` 直接跳过。
-  结果是 fail_count 恒为 0、last_ok_at 恒为空、没有轮转、没有熔断冷却，面板上还
-  看不出流量到底走了代理还是直连（实测：迁移前走静态代理的请求在 requests 表里
-  记的是 `proxy_id=0`，跟真直连无法区分）。池子里放一个，处处严格更好。
+  Por qué no es "una opción simple más" sino que hay que eliminarlos: estas dos rutas singleton
+  recorren la rama "ID=0", así que comparten el mismo slot de rate limiting que la conexión
+  directa, y la función de escritura de salud empieza con `id<=0 return` y se salta todo. El
+  resultado es fail_count siempre 0, last_ok_at siempre vacío, sin rotación, sin enfriamiento por
+  fusible, y en el panel ni siquiera se distingue si el tráfico fue por proxy o directo (en pruebas
+  reales: antes de migrar, las peticiones por proxy estático quedaban registradas en la tabla
+  requests como `proxy_id=0`, indistinguibles de una conexión realmente directa). Poner uno en el
+  pool y ser estricto en todas partes es mejor.
 
-  **升级时自动迁移，且不动你原来的值**：kv 里存的静态代理和单 cookie 会在首次
-  启动时搬进对应的池子，原值原样留着（所以回滚到 4.0.0 依然可用）。迁移只在
-  **入池成功后**才记"已迁移"，失败就留到下次启动重试 —— 4.0.0 对静态代理字段
-  零校验，存的可能是缺 scheme 的 `1.2.3.4:8080`，先清值再入池会让它凭空消失。
+  **Al actualizar se migra automáticamente, sin tocar tus valores originales**: el proxy estático y
+  la cookie individual guardados en kv se trasladan al pool correspondiente en el primer arranque,
+  dejando los valores originales intactos (así que hacer rollback a 4.0.0 sigue funcionando). La
+  migración solo marca "migrado" **tras entrar con éxito en el pool**; si falla, se deja para
+  reintentar en el siguiente arranque —4.0.0 no valida nada del campo de proxy estático, y lo
+  guardado podría ser un `1.2.3.4:8080` sin scheme; borrar el valor antes de meterlo en el pool lo
+  haría desaparecer de la nada.
 
-- **`--proxy` / `--cookie-file` 改成声明式跟随**：值变了替换池子里对应的那一条，
-  而不是再加一条。值没变时完全不碰池子，你在面板上的增删改停用都以面板为准。
-  轮换 `cookie.txt` 的部署尤其要注意这个变化 —— 按值去重的话会一次次往池子里堆
-  死 cookie，而它们仍然 enabled、仍然参与轮转。
+- **`--proxy` / `--cookie-file` pasan a seguimiento declarativo**: al cambiar el valor se
+  reemplaza la entrada correspondiente del pool, en vez de añadir otra. Cuando el valor no cambia
+  no se toca el pool en absoluto, y lo que hagas en el panel (añadir/eliminar/editar/desactivar)
+  manda. Los despliegues que rotan `cookie.txt` deben prestar especial atención a este cambio: al
+  deduplicar por valor se irían acumulando cookies muertas en el pool una y otra vez, y seguirían
+  enabled y participando en la rotación.
 
-- **`--proxy` / `--cookie-file` / `config.json` 降级成播种参数**。它们不再是"第二套
-  配置"，只在启动时把值导入池子（按 URL / cookie 内容去重），之后一律以池子为准。
-  改了重启即生效。原来 `--proxy` 的语义是"代理池为空时的兜底"，而且**一旦你在面板
-  保存过一次设置，kv 里就有了完整记录，`--proxy` 就永远不再生效**——改 compose 会
-  发现没用。现在没有这个坑了。
+- **`--proxy` / `--cookie-file` / `config.json` se degradan a parámetros de siembra**. Ya no son
+  una "segunda configuración"; solo importan sus valores al pool al arrancar (deduplicando por URL
+  / contenido de cookie), y a partir de ahí manda siempre el pool. Los cambios surten efecto al
+  reiniciar. Antes la semántica de `--proxy` era "reserva cuando el pool de proxies está vacío", y
+  **en cuanto guardabas una vez los ajustes en el panel, kv ya tenía el registro completo y
+  `--proxy` dejaba de tener efecto para siempre** —cambiabas el compose y no servía de nada. Ahora
+  ya no existe esa trampa.
 
-### 新增
+### Añadido
 
-- **超长请求不再让上游吃掉你刚问的那句**。上游单请求约 **13 万 UTF-8 字节**封顶，
-  超了**从尾部静默截断**且不报错；而我们按顺序拼 prompt、最新消息在末尾 ——
-  被截掉的正好是用户刚问的话，模型只看到前面的系统前言，回一句通用开场白，
-  既不答题也不调工具。表现看着像"模型变笨"或"工具支持不好"。
+- **Las peticiones ultra largas ya no hacen que el upstream se coma la frase que acabas de
+  preguntar**. El upstream pone un tope de unos **130 mil bytes UTF-8** por petición; al superarlo
+  **trunca silenciosamente desde la cola** y no da error; y como nosotros montamos el prompt en
+  orden, con el mensaje más reciente al final, lo truncado es justo lo que acaba de preguntar el
+  usuario, de modo que el modelo solo ve el preámbulo del sistema de delante y devuelve un saludo
+  genérico, sin responder ni invocar herramientas. Todo esto parece "el modelo se ha vuelto tonto"
+  o "el soporte de herramientas va mal".
 
-  现在分两种情况：
+  Ahora hay dos casos:
 
-  - **挂了 cookie**：超长的对话自动转成 `message.txt` 附件发上去，请求体里只剩
-    一句短指令，那堵墙就绕过去了。**但附件也有上限**——模型能看到的内容合计
-    约 16 万字节，超出部分传上去了但读不到。所以这条路把可用长度从 13 万提到
-    约 16 万，是有限的改善，真正的长对话仍需客户端自己压缩。
-    （上传失败时**不静默退回内联**：那样上游会截掉最新提问，客户端拿到一个
-    答非所问的 200 却看不出问题，宁可明确报错。）
-  - **没挂 cookie**：直接返回 400 + `context_length_exceeded`，错误信息里提示
-    导入 cookie 可以拿到更长的上限。匿名态能把文件传上去，但在对话里引用会被
-    服务端拒绝，所以匿名没有别的办法。
+  - **Con cookie configurada**: la conversación ultra larga se convierte automáticamente en un
+    adjunto `message.txt` que se sube, y en el cuerpo de la petición solo queda una instrucción
+    corta, sorteando así el muro. **Pero los adjuntos también tienen límite**: el contenido que el
+    modelo puede ver suma unos 160 mil bytes; lo que lo exceda se sube pero no se puede leer. Así
+    que esta vía sube la longitud disponible de 130 mil a unos 160 mil, una mejora limitada; las
+    conversaciones realmente largas siguen necesitando que el cliente las comprima por su cuenta.
+    (Si falla la subida **no se vuelve silenciosamente a inline**: así el upstream truncaría la
+    pregunta más reciente y el cliente recibiría un 200 que no responde a lo preguntado sin poder
+    ver el problema; es preferible dar un error explícito.)
+  - **Sin cookie**: se devuelve directamente 400 + `context_length_exceeded`, y el mensaje de error
+    sugiere que importar cookie permite obtener un límite mayor. En anónimo se puede subir el
+    archivo, pero al referenciarlo dentro de la conversación el servidor lo rechaza, así que en
+    anónimo no hay otra solución.
 
-  **不自己丢历史**：那还是静默丢数据，只是换了个地方丢，客户端以为整段都发出去了、
-  模型却忘了东西。`context_length_exceeded` 是 OpenAI 兼容客户端认得的信号，
-  agentic 客户端收到会自己压缩上下文再试，比我们盲丢几段聪明得多。
+  **No descartamos el historial por nuestra cuenta**: eso seguiría siendo perder datos
+  silenciosamente, solo que en otro sitio; el cliente cree que se envió todo el tramo y el modelo
+  ha olvidado cosas. `context_length_exceeded` es una señal que los clientes compatibles con OpenAI
+  reconocen, y los clientes agénticos que la reciben comprimen su propio contexto y reintentan, mucho
+  más listo que si nosotros descartáramos unos cuantos tramos a ciegas.
 
-  上限 `max_prompt_bytes` 默认 128000，可在面板改，0 = 关掉检查。
-  **单位是 UTF-8 字节不是 token**：实测上游的墙按字节走，跟语言无关 —— 中英文
-  对齐到同一字节数各打 3 次，约 129,950 字节各 3/3 通过、135,990 字节各 1/3，
-  而同一批请求的 token 数差 1.9 倍。按 token 设阈值的话，同一个数字对英文偏松、
-  对中文会卡在真实容量的三分之一左右。
+  El límite `max_prompt_bytes` es 128000 por defecto, modificable en el panel; 0 = desactiva la
+  comprobación.
+  **La unidad son bytes UTF-8, no tokens**: en pruebas reales el muro del upstream va por bytes y es
+  independiente del idioma —alineando chino e inglés al mismo número de bytes y lanzando 3 pruebas
+  cada uno, unos 129,950 bytes pasaron 3/3 cada uno, y 135,990 bytes 1/3 cada uno, mientras que el
+  número de tokens del mismo lote de peticiones difería en 1.9 veces. Si se fijara el umbral por
+  tokens, el mismo número sería demasiado permisivo para inglés y se quedaría atascado en torno a un
+  tercio de la capacidad real para chino.
 
-- **读图（挂 cookie 时）**：`/v1/chat/completions` 的 `image_url` 和 `/v1/responses`
-  的 `input_image` 现在会真的传给模型。支持 `data:` URL 和 http(s) 链接（后者下载
-  下来再传——直接把链接给上游是不行的，它只认自己存储里的附件），单张 12MB 封顶。
-  远程图走跟对话同一个出口，不然等于多暴露一个 IP。匿名态不支持，理由同上。
+- **Lectura de imágenes (con cookie configurada)**: el `image_url` de `/v1/chat/completions` y el
+  `input_image` de `/v1/responses` ahora sí se pasan de verdad al modelo. Admiten URL `data:` y
+  enlaces http(s) (estos últimos se descargan primero y luego se suben —pasar el enlace
+  directamente al upstream no sirve, porque solo reconoce adjuntos de su propio almacenamiento—),
+  con un tope de 12MB por imagen. Las imágenes remotas salen por la misma salida que la
+  conversación, ya que si no equivaldría a exponer una IP más. En anónimo no se admite, por la
+  misma razón.
 
-- **Cookie 自动续期**。上游几乎每个响应都会用 `Set-Cookie` 刷新 `SIDCC` /
-  `__Secure-1PSIDCC` / `__Secure-3PSIDCC`，浏览器收下就一直是活的；我们以前只发不收，
-  我们以前只发不收，存的那份就一直是导入时的旧值。现在每次请求都把刷新的项合并
-  回账号，跟浏览器行为一致。
+- **Renovación automática de cookies**. El upstream, en casi cada respuesta, refresca `SIDCC` /
+  `__Secure-1PSIDCC` / `__Secure-3PSIDCC` con `Set-Cookie`, y el navegador, al recibirlo, lo
+  mantiene vivo siempre; nosotros antes solo enviábamos, sin recibir, así que la copia guardada se
+  quedaba con el valor antiguo de cuando se importó. Ahora cada petición fusiona de vuelta en la
+  cuenta las entradas refrescadas, igual que hace el navegador.
 
-  **但这没能延长账号寿命**：同一来源的 cookie，带续期+保活的活了 86 分钟，两者都
-  没有的活了 114 分钟（n=3，且都是跟真实浏览器共用同一个会话，很可能是两边各自
-  轮转 SIDCC 撞在一起）。所以这条只声明"跟浏览器行为一致"，不声明"号能活更久"
-  —— 账号到底为什么一两小时就死，还没查清。
+  **Pero esto no logró prolongar la vida de las cuentas**: cookies del mismo origen, con renovación
+  + keepalive duraron 86 minutos, y sin ninguna de las dos duraron 114 minutos (n=3, y todas
+  compartían la misma sesión que el navegador real, muy probablemente porque ambos lados rotaban
+  SIDCC y chocaban). Así que esto solo declara "es coherente con el comportamiento del navegador",
+  no declara "las cuentas viven más" —por qué la cuenta muere en una o dos horas sigue sin
+  esclarecerse.
 
-- **会话保活**。浏览器每 10 分钟往 `accounts.google.com/RotateCookies` 打一次，
-  间隔由服务端在页面里指定（响应体 `[["identity.hfcr",600],…]` 的 600 秒）。
-  这个调用**也会**返回 Set-Cookie，刷的是跟上一条同一组三项（两份抓包 12 次里 9
-  次、15 次里 14 次），所以同样要合并回账号。整份抓包里没有任何响应重设过
-  `__Secure-1PSIDTS`。失败**不计入 cookie 健康度**：打的是
-  `accounts.google.com`，跟对话能不能用是两码事，网络抖一下就把号标坏会让它在
-  挑号时沉底，反而伤可用性。
+- **Keepalive de sesión**. El navegador llama cada 10 minutos a
+  `accounts.google.com/RotateCookies`, con el intervalo especificado por el servidor en la página
+  (los 600 segundos del cuerpo `[["identity.hfcr",600],…]`). Esta llamada **también** devuelve
+  Set-Cookie, y refresca el mismo grupo de tres entradas que el punto anterior (9 de 12 veces en
+  una captura, 14 de 15 en otra), así que también hay que fusionarla de vuelta en la cuenta. En toda
+  la captura ninguna respuesta reestableció `__Secure-1PSIDTS`. Un fallo **no cuenta para la salud
+  de la cookie**: llama a `accounts.google.com`, y que la conversación funcione o no es otra cosa;
+  marcar la cuenta como mala por un parpadeo de red la hundiría en la selección de cuenta y
+  perjudicaría la disponibilidad.
 
-- **Cookie 池加「检测」按钮**，点一下就知道这个号还能不能用，不用发一次真实对话去试。
-  区分"登录态有效"和"过期/无效"——后者上游并不拒绝，只是把你当匿名，光看请求成功
-  是分不出来的。
+- **Botón "Detectar" en el pool de cookies**: pulsándolo se sabe al momento si la cuenta sirve o
+  no, sin tener que probar con una conversación real. Distingue "sesión válida" de
+  "caducada/inválida" —esta última el upstream no la rechaza, solo te trata como anónimo, así que
+  mirando solo si la petición tuvo éxito no se distingue.
 
-- **导入 Cookie 弹窗改成两种填法**，默认「整串粘贴」：直接把浏览器复制的
-  `name=value; name=value; …` 贴进来即可，这也最接近真实浏览器发出去的形态。
-  想逐项填的切到另一个 tab。
+- **El modal de importar Cookie pasa a tener dos formas de rellenarlo**, por defecto "pegar la
+  cadena entera": basta pegar el `name=value; name=value; …` copiado del navegador, que además es
+  lo más parecido a lo que envía el navegador real. Si se quiere rellenar entrada por entrada, se
+  cambia a la otra pestaña.
 
-- **cookie 失效时换下一个账号**，不再让整个请求陪葬。以前挑中的号一坏，这次请求
-  就直接失败，池子里其它好号完全没机会——池子越大反而越容易踩雷。
+- **Al invalidarse una cookie se pasa a la siguiente cuenta**, en vez de sacrificar toda la
+  petición. Antes, si la cuenta elegida fallaba, esta petición fallaba directamente y las demás
+  cuentas buenas del pool no tenían ninguna oportunidad —cuanto más grande el pool, más fácil
+  pisar una mina.
 
-- **每个 cookie 账号粘住自己的出口**。以前 cookie 池和代理池各自独立轮转，同一个
-  Google 账号会从几十个不同 IP 发出请求，这在 Google 眼里是账号共享的典型特征。
-  现在账号首次用到哪个出口就绑定下来，之后一直走它，出口不可用了才换。
+- **Cada cuenta de cookie se ancla a su propia salida**. Antes el pool de cookies y el pool de
+  proxies rotaban de forma independiente, y una misma cuenta de Google enviaba peticiones desde
+  decenas de IP distintas, lo que a ojos de Google es un rasgo típico de cuenta compartida. Ahora
+  la cuenta, la primera vez que usa una salida, se vincula a ella y a partir de ahí siempre va por
+  esa, cambiando solo si la salida deja de estar disponible.
 
-- **请求记录带上用了哪个 cookie 账号**（失败的记录也带），面板上直接看得到是哪个号
-  在出问题，不用再靠时间去猜。没挂 cookie 的显示「匿名」。
+- **El registro de peticiones indica qué cuenta de cookie se usó** (también en los registros de
+  fallos), de modo que en el panel se ve directamente qué cuenta está dando problemas, sin tener
+  que adivinarlo por la hora. Las que no llevan cookie muestran "anónimo".
 
-- **真流式补齐最后两条路**：`/v1/responses` 现在推 `response.output_text.delta`，
-  带 `tools` 的 `/v1/chat/completions` 也边出边发。以前这两条都是收完再发，因为
-  ```` ```tool_call ```` 围栏要完整文本才能解析。现在正文过一道增量闸门，只放行
-  **确定不在围栏里**的部分——尾巴上压着半个开围栏（`` `` `` 或 `` ```tool_c ``）
-  也要扣住等下一帧，先发出去再发现是围栏就晚了。实测流式与非流式结果逐字相同。
-- **代理熔断改冷却制**：连续失败 5 次熔断后默认歇 120 分钟自动放回池子，时长可在
-  「设置」页改，0 = 退回旧的永久除名。120 这个数照实测来的——被 Google 拦掉的出口
-  106-121 分钟自动恢复。以前熔断即永久除名，也就永远等不到一次成功把计数清零，
-  只能手动重置。
-- **两个降级开关，默认都关**（保持旧行为，打开是明确选择）：
-  - `fallback_direct`：代理池一个出口都用不上时退回直连。关着返回 429，本机 IP
-    不会暴露给上游；开了会写日志说明这次走了直连。
-  - `fallback_anon`：cookie 失效时降级匿名继续跑。关着直接报错——cookie 失效后
-    上游并不拒绝，只是把你当匿名用户，`3.1 Pro` 被静默降级成 `3.5 Flash-Lite`、
-    思考链消失，客户端完全看不出来，所以默认宁可明确失败。
-- **`bl` 版本号自动跟随上游**：每 6 小时从 `/app` 页面抓一次，形状对不上或抓不到
-  就继续用配置里钉的值。可在「设置」页关掉。
+- **El streaming real completa las dos últimas vías**: `/v1/responses` ahora empuja
+  `response.output_text.delta`, y `/v1/chat/completions` con `tools` también envía a medida que
+  produce. Antes ambas recibían todo y luego enviaban, porque el delimitador
+  ```` ```tool_call ```` necesita el texto completo para parsearse. Ahora el cuerpo pasa por una
+  compuerta incremental que solo deja salir la parte **que con certeza no está dentro del
+  delimitador**: la cola con medio delimitador de apertura (`` `` `` o `` ```tool_c ``) también se
+  retiene a la espera del siguiente frame, porque enviarlo antes y descubrir luego que era el
+  delimitador ya sería tarde. En pruebas reales, el resultado en streaming y sin streaming es
+  idéntico carácter a carácter.
+- **El fusible de proxy pasa a régimen de enfriamiento**: tras fundirse por 5 fallos consecutivos,
+  por defecto descansa 120 minutos y vuelve automáticamente al pool; la duración se modifica en la
+  página "Ajustes", 0 = volver al antiguo destierro permanente. El 120 sale de pruebas reales: las
+  salidas bloqueadas por Google se recuperan solas a los 106-121 minutos. Antes, fundirse era
+  desterrar para siempre, con lo que nunca llegaba una vez de éxito que pusiera el contador a cero,
+  y solo se podía restablecer a mano.
+- **Dos interruptores de degradación, ambos desactivados por defecto** (se mantiene el
+  comportamiento antiguo; activarlos es una elección explícita):
+  - `fallback_direct`: cuando no sirve ninguna salida del pool de proxies, se recurre a la conexión
+    directa. Desactivado devuelve 429, y la IP local no se expone al upstream; activado escribe un
+    log indicando que esta vez fue directa.
+  - `fallback_anon`: cuando la cookie se invalida, se degrada a anónimo y se sigue ejecutando.
+    Desactivado da error directamente —tras invalidarse la cookie el upstream no la rechaza, solo te
+    trata como usuario anónimo, `3.1 Pro` se degrada silenciosamente a `3.5 Flash-Lite`, la cadena
+    de pensamiento desaparece, y el cliente no lo nota en absoluto, así que por defecto se prefiere
+    fallar explícitamente.
+- **El número de versión de `bl` sigue automáticamente al upstream**: cada 6 horas se captura una
+  vez desde la página `/app`; si la forma no coincide o no se captura, se sigue usando el valor
+  fijado en la configuración. Se puede desactivar en la página "Ajustes".
 
-### 修复
+### Correcciones
 
-- **容器起不来，报 `unable to open database file (14)`**。镜像以 nonroot(uid 65532)
-  运行，而 bind mount 会用宿主目录的属主盖掉镜像里 `/data` 的属主；宿主上目录不
-  存在时 Docker 自动建、属主是 root，于是写不进去。compose 默认改成具名卷，
-  bind mount 保留为注释并写明要先 `sudo chown -R 65532:65532 ./data`。报错信息也
-  改成把当前 uid、目录和两种解法一起打出来 —— 14 是 SQLITE_CANTOPEN，光看字面
-  没人会想到是权限。
+- **El contenedor no arranca y da `unable to open database file (14)`**. La imagen se ejecuta como
+  nonroot (uid 65532), y el bind mount sobrescribe el propietario de `/data` de la imagen con el
+  propietario del directorio del host; si el directorio no existe en el host, Docker lo crea
+  automáticamente con propietario root, y entonces no se puede escribir. En compose se cambió por
+  defecto a un volumen con nombre, y el bind mount se conserva comentado indicando que primero hay
+  que ejecutar `sudo chown -R 65532:65532 ./data`. El mensaje de error también se cambió para
+  imprimir juntos el uid actual, el directorio y las dos soluciones —14 es SQLITE_CANTOPEN, y por el
+  texto literal nadie pensaría en permisos.
 
-- **设了 `HTTP_PROXY` / `ALL_PROXY` 却没生效且毫无提示**。本程序有意不读这些环境
-  变量（宿主机上随手一个 export 会悄悄改变出口 IP，而面板仍显示直连），但"不读"
-  和"不吭声"是两回事。现在启动时检测到它们、且代理池为空，会打一行说明。
+- **Se define `HTTP_PROXY` / `ALL_PROXY` pero no surte efecto y no avisa nada**. Este programa
+  deliberadamente no lee esas variables de entorno (un export suelto en el host cambiaría
+  silenciosamente la IP de salida mientras el panel sigue mostrando conexión directa), pero "no
+  leerlas" y "no decir nada" son dos cosas distintas. Ahora, al arrancar, si se detectan y el pool
+  de proxies está vacío, se imprime una línea explicándolo.
 
-- **偶发绕过代理走直连**。`loadProxies` 的 `Scan` 出错走 `continue`、`rows.Err()`
-  根本不查，遍历中断被当成正常读完，于是代理列表被半截结果甚至空列表覆盖；而
-  「有没有配代理池」正是拿这个列表长度判断的，一空就退回直连，把部署者的真实 IP
-  暴露给上游，日志上只是几条普通请求。触发条件是每个请求结束都全表重读一次代理表，
-  和自己刚发出的 UPDATE 在 WAL 上撞 SQLITE_BUSY。现在读失败保留上一次的池子，
-  且结果回写只改内存里那一条，不再整表重读。
-- **空响应不重试**。上游偶尔返回 HTTP 200 但一个内容帧都没有（瞬时拒绝），旧代码
-  只在非 200 或网络错误时重试，于是一次可自愈的抖动直接变成客户端可见的 502。
-  判据是**有没有内容帧**，不能用 `BardErrorInfo`——正常响应的结束帧里也带错误码。
-- **`inner[41]` 跟浏览器不一致**：我们发 `[2]`，浏览器三种场景抓包全是 `[1]`。
-  这个值是早期抄来的，协议层已被证伪。
+- **De vez en cuando se saltaba el proxy y se iba directo**. El `Scan` de `loadProxies` fallaba y
+  hacía `continue`, `rows.Err()` no se comprobaba en absoluto, y una interrupción del recorrido se
+  tomaba como lectura completa, de modo que la lista de proxies quedaba sobrescrita por un
+  resultado a medias o incluso vacío; y "¿hay pool de proxies configurado?" se decide precisamente
+  por la longitud de esta lista, así que al quedar vacía se volvía a la conexión directa, exponiendo
+  la IP real del desplegador al upstream, con solo unas pocas peticiones normales en el log. La
+  condición desencadenante es que al terminar cada petición se relee entera la tabla de proxies, y
+  choca con el UPDATE que acaba de emitirse en el WAL con SQLITE_BUSY. Ahora, si la lectura falla,
+  se conserva el último pool, y la escritura de vuelta del resultado solo modifica esa entrada en
+  memoria, sin releer la tabla entera.
+- **Las respuestas vacías no se reintentan**. El upstream ocasionalmente devuelve HTTP 200 pero sin
+  ningún frame de contenido (rechazo instantáneo); el código antiguo solo reintentaba en caso de no
+  200 o error de red, así que un parpadeo que podría autocorregirse se convertía directamente en un
+  502 visible para el cliente. El criterio es **si hay frame de contenido**, y no se puede usar
+  `BardErrorInfo`—el frame de fin de una respuesta normal también lleva código de error.
+- **`inner[41]` no coincide con el navegador**: nosotros enviamos `[2]`, y las capturas del
+  navegador en tres escenarios dan todas `[1]`. Este valor se copió en su momento y a nivel de
+  protocolo ya ha sido refutado.
 
-### 文档更正
+### Correcciones de documentación
 
-- **「放慢节奏没用」是错的**。旧判据是住宅出口上突发档 103-177 与慢速档 81-166
-  几乎完全重叠。观察没错，归因错了——住宅出口跑久了自己退化（8 个预筛干净的出口
-  跑慢节奏，6 个中途失败率超 40%），退化的方差盖过了节奏。换静态 IP 排除这个混淆项
-  后：同一个 IP 突发打在 **188 次**被拦，改成 **10 次/分钟连打 800 次、跨 110 分钟
-  一次没被拦**。所以 `per_ip_rph=80` 是突发档的保守下沿，按低速率跑可以调高很多。
-- **被拦后的恢复时长**从「未测」补成实测 **106-121 分钟**。
-- 面板和代码注释里残留的「约 85 次」全部换成实测区间。
+- **"Bajar el ritmo no sirve" es falso**. El criterio antiguo era que en una salida residencial el
+  modo racha 103-177 y el modo lento 81-166 casi se solapaban por completo. La observación era
+  correcta, pero la atribución estaba mal: la salida residencial se degrada sola tras usarse mucho
+  (8 salidas previamente filtradas como limpias corriendo en modo lento, 6 de ellas con tasa de
+  fallo superior al 40% a mitad de camino), y la varianza de la degradación superaba la del ritmo.
+  Tras cambiar a IP estática para eliminar este factor de confusión: la misma IP, en racha, fue
+  bloqueada al llegar a **188 veces**; cambiando a **10 veces/minuto durante 800 llamadas seguidas
+  a lo largo de 110 minutos, no fue bloqueada ni una vez**. Así que `per_ip_rph=80` es el límite
+  inferior conservador del modo racha, y a baja velocidad se puede subir bastante.
+- **La duración de recuperación tras ser bloqueado** pasó de "no medida" a medida en real:
+  **106-121 minutos**.
+- Todos los "unas 85 veces" residuales en el panel y los comentarios de código se sustituyen por
+  el intervalo medido.
 
 ## 4.0.0
 
-### ⚠️ 破坏性变更
+### ⚠️ Cambios incompatibles
 
-- **移除 5 个旧模型别名**：`gemini-3.5-flash`、`gemini-3.5-flash-thinking`、
-  `gemini-3.5-flash-thinking-lite`、`gemini-auto`、`gemini-flash-lite` 传了会返回
-  **400**。它们在服务端没有对应条目，实际全都落到同一个后端，留着只会让人以为有
-  五种模型可选。现在只暴露服务端清单里真实存在的三个：`gemini-3.6-flash`、
-  `gemini-3.5-flash-lite`、`gemini-3.1-pro`。
-  **升级前请检查客户端配的模型名。**
+- **Se eliminan 5 alias de modelos antiguos**: `gemini-3.5-flash`,
+  `gemini-3.5-flash-thinking`, `gemini-3.5-flash-thinking-lite`, `gemini-auto`,
+  `gemini-flash-lite` devuelven **400** si se pasan. No tienen entrada correspondiente en el
+  servidor, y todos caían en el mismo backend, así que mantenerlos solo hacía creer que había cinco
+  modelos entre los que elegir. Ahora solo se exponen los tres que existen realmente en la lista del
+  servidor: `gemini-3.6-flash`, `gemini-3.5-flash-lite`, `gemini-3.1-pro`.
+  **Antes de actualizar, comprueba el nombre de modelo configurado en tu cliente.**
 
-数据库无需迁移，建表语句都是 `IF NOT EXISTS`，老库直接可用。
+La base de datos no requiere migración; las sentencias de creación de tablas son todas
+`IF NOT EXISTS`, y las bases antiguas sirven directamente.
 
-### 新增
+### Añadido
 
-- **Cookie 池**：可导入多个 Google 登录态账号，请求按最久未用优先自动轮转，池空
-  才回落到「设置」页的单 cookie。列表只显示脱敏摘要（cookie 数量 / 关键项是否齐全 /
-  SAPISID 末 4 位 / 失败次数），完整 cookie 不出网。
-- **思考链（`reasoning_content`）**：`gemini-3.1-pro` 每次回答前的推理过程现在会
-  暴露出来。非流式放 `message.reasoning_content`，流式按 `delta.reasoning_content`
-  推，且思考块全部推完才开始推正文（跟上游顺序一致）。token 单列在
-  `usage.reasoning_tokens`，**不计入 `completion_tokens`**——客户端默认折叠不展示，
-  算进去等于让用户为看不见的输出买单。
-- **管理面板改版**：改用 Gemini 设计语言的亮色主题，列表定高撑满视口 + 分页，
-  错误按「该怎么办」分类，首屏主角换成「距离封禁红线」。
-- **多架构容器镜像**：push 到 main 或打 tag 时自动构建并推送到 ghcr。
+- **Pool de cookies**: se pueden importar varias cuentas de Google con sesión iniciada; las
+  peticiones rotan automáticamente dando prioridad a la usada hace más tiempo, y solo cuando el
+  pool está vacío se recurre a la cookie individual de la página "Ajustes". La lista solo muestra
+  un resumen censurado (número de cookies / si están completas las entradas clave / últimos 4
+  dígitos de SAPISID / número de fallos); la cookie completa no sale a la red.
+- **Cadena de pensamiento (`reasoning_content`)**: el proceso de razonamiento de `gemini-3.1-pro`
+  antes de cada respuesta ahora se expone. En no streaming se pone en
+  `message.reasoning_content`; en streaming se empuja como `delta.reasoning_content`, y solo se
+  empieza a empujar el cuerpo cuando se han terminado de enviar todos los bloques de pensamiento
+  (en el mismo orden que el upstream). Los tokens se listan aparte en `usage.reasoning_tokens` y
+  **no cuentan para `completion_tokens`** —el cliente los pliega por defecto sin mostrarlos, y
+  contarlos equivaldría a hacer que el usuario pague por una salida que no ve.
+- **Renovación del panel de administración**: se adopta el tema claro del lenguaje de diseño de
+  Gemini, las listas tienen altura fija que llena el viewport + paginación, los errores se
+  clasifican según "qué hay que hacer", y el protagonista de la primera pantalla pasa a ser la
+  "distancia a la línea roja de bloqueo".
+- **Imagen de contenedor multi-arquitectura**: al hacer push a main o al crear un tag, se compila y
+  se publica automáticamente en ghcr.
 
-### 修复
+### Correcciones
 
-- **配了有效 cookie 会导致所有请求 400**。带 cookie 的请求必须额外携带 XSRF token
-  （表单字段 `at`），我们只发了 `f.req`。匿名请求不要求这个字段，所以这个缺陷长期
-  没暴露——只要挂上**有效** cookie，cookie 功能就是 100% 不可用；而挂一个**过期**
-  cookie 反而"正常"（被当匿名处理），正好把问题盖住了。现在会自动从 Gemini 页面取
-  token、按 cookie 缓存、过期自动重取。
-- **Cookie 池的健康度从来没被回写过**。`markAccountResult` 是死代码，`fail_count`
-  恒为 0、`last_ok_at` 恒为空，而面板把这两列显示出来了——等于给运维看一份「永远
-  全部健康」的假报表。现在请求结束会回写，且**只把 401/403 算作 cookie 的错**：
-  网络错误、代理失败、被 Google 拦（302）一律不计，否则住宅代理的高失败率会让
-  这个数字变成代理噪音，好 cookie 反而被记成失败最多的那个。
-- 管理面板若干显示缺陷：趋势图无限变高、登录卡被拉满高、按钮溢出卡片、点击当前
-  页会整页重渲染。
-- 设置页从 2234px 压到 1075px：12 个配置项按语义分成四组、组内自适应多列。
+- **Configurar una cookie válida provocaba 400 en todas las peticiones**. Las peticiones con cookie
+  deben llevar además el XSRF token (campo de formulario `at`), y nosotros solo enviábamos `f.req`.
+  Las peticiones anónimas no piden este campo, por lo que este defecto no se había expuesto en
+  mucho tiempo —basta con poner una cookie **válida** para que la funcionalidad de cookie sea 100%
+  inutilizable; y poner una cookie **caducada** en cambio "funcionaba" (se trataba como anónimo),
+  tapando justo el problema. Ahora se obtiene automáticamente el token de la página de Gemini, se
+  cachea por cookie, y se reobtiene automáticamente al caducar.
+- **La salud del pool de cookies nunca se escribía de vuelta**. `markAccountResult` era código
+  muerto, `fail_count` siempre 0, `last_ok_at` siempre vacío, y el panel mostraba esas dos columnas
+  —equivalía a dar a operaciones un informe falso de "todo sano siempre". Ahora al terminar la
+  petición se escribe de vuelta, y **solo se cuenta 401/403 como fallo de la cookie**: errores de
+  red, fallos de proxy y bloqueos de Google (302) no cuentan, porque de lo contrario la alta tasa
+  de fallo de los proxies residenciales convertiría ese número en ruido del proxy, y una cookie
+  buena quedaría registrada como la que más falla.
+- Varios defectos de visualización del panel de administración: el gráfico de tendencia crecía sin
+  límite, la tarjeta de login se estiraba al máximo de alto, los botones se desbordaban de la
+  tarjeta, y pulsar la página actual rerenderizaba la página entera.
+- La página de ajustes se comprimió de 2234px a 1075px: los 12 elementos de configuración se
+  dividen por semántica en cuatro grupos, con columnas adaptativas dentro de cada grupo.
 
-### 文档更正（都是被实测推翻的旧结论）
+### Correcciones de documentación (todas conclusiones antiguas refutadas por pruebas reales)
 
-- **`gemini-3.1-pro` 配了有效 cookie 是真能用的**。旧文档写「免费号即使登录也只
-  拿到 3.6 Flash」——那个观察是在缺 XSRF token 的条件下得到的，当时带 cookie 的
-  请求根本发不出去。补齐后连打 6 次全部回报 `3.1 Pro`，且每次都带思考链。
-- **单 IP 上限**从「约 85 次」改成实测区间 **80–180 次**，并写清它主要由**连接
-  策略和出口质量**决定，不由请求快慢决定：同样并发 10，复用连接池能打到 172/177，
-  每次新建连接只有 106/109。
-- **走代理时 Google 看到的是我们自己的 TLS 指纹**，不是出口节点的（JA3 实测：
-  stdlib 直连与过代理同指纹，同一代理下换 tls-client 则不同）。代码注释原来写反了。
-  但实测这不影响封禁阈值，所以没有因此改实现。
+- **`gemini-3.1-pro` con una cookie válida sí funciona de verdad**. La documentación antigua decía
+  "una cuenta gratuita, incluso con sesión iniciada, solo obtiene 3.6 Flash" —esa observación se
+  obtuvo en condiciones de falta del XSRF token, cuando las peticiones con cookie ni siquiera
+  podían salir. Tras completarlo, 6 llamadas seguidas devolvieron todas `3.1 Pro`, y cada vez con
+  cadena de pensamiento.
+- **El límite por IP única** pasa de "unas 85 veces" al intervalo medido **80–180 veces**, y se
+  aclara que lo determina principalmente la **estrategia de conexión y la calidad de la salida**,
+  no la velocidad de las peticiones: con la misma concurrencia de 10, reutilizando el pool de
+  conexiones se llega a 172/177, y creando una conexión nueva cada vez solo 106/109.
+- **Al pasar por proxy, lo que Google ve es nuestro propio fingerprint TLS**, no el del nodo de
+  salida (JA3 medido: conexión directa con stdlib y a través de proxy tienen el mismo fingerprint;
+  bajo el mismo proxy, cambiando a tls-client, difiere). El comentario del código estaba al revés.
+  Pero en pruebas reales esto no afecta al umbral de bloqueo, así que no se cambió la
+  implementación por ello.
 
 ## 3.0.0
 
-单二进制 OpenAI 兼容反代 + 中文管理面板。
+Proxy inverso compatible con OpenAI en binario único + panel de administración en chino.

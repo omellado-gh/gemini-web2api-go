@@ -17,13 +17,13 @@ import (
 	"github.com/google/uuid"
 )
 
-// convState 是一路 Gemini 原生会话的状态。整条会话绑定同一个 cookie / 出口，中途不换
-// —— 换了 Gemini 就当成另一个会话，续接的 cid 失效。
+// convState mantiene el estado de una sesión nativa de Gemini. Toda la sesión está ligada a la misma cookie/egreso; no se cambia a mitad.
+// Si cambia el entorno Gemini, se trata como otra sesión y el cid para reanudar deja de ser válido.
 type convState struct {
 	cid, rid, rcid, tok26 string
-	turn                  int    // 会话内轮次索引，填 inner[17]，逐轮 +1
-	cookie                string // 会话绑定 cookie：登录号的 cookie，或匿名 /app 拿的 session
-	sapisid               string // 登录态算 SAPISIDHASH 用；匿名为空
+	turn                  int    // índice de turno dentro de la sesión; se coloca en inner[17], +1 por turno
+	cookie                string // cookie ligada a la sesión: la de la cuenta con login, o la session obtenida anónimamente en /app
+	sapisid               string // se usa para calcular SAPISIDHASH en estado con login; vacío en anónimo
 	isLogin               bool
 	accountID             int64
 	proxyID               int64
@@ -32,7 +32,7 @@ type convState struct {
 }
 
 const (
-	// convTTL 跟导出 cookie ~2 小时寿命对齐，过期的会话状态没有复用价值。
+	// convTTL se alinea con la vida útil (~2h) de las cookies exportadas; sesiones caducadas no merecen reutilizarse.
 	convTTL = 90 * time.Minute
 	convMax = 4000
 )
@@ -42,7 +42,7 @@ var (
 	convStore = map[string]*convState{}
 )
 
-// convDelete 作废一路会话（续接失败时用，避免客户端重试还撞同一路死会话）。
+// convDelete invalida una sesión (usado al fallar reanudación para evitar reintentos sobre misma sesión muerta).
 func convDelete(key string) {
 	if key == "" {
 		return
@@ -52,7 +52,7 @@ func convDelete(key string) {
 	convMu.Unlock()
 }
 
-// convGet 取一路会话，顺带清掉过期的。
+// convGet recupera una sesión y elimina las caducadas.
 func convGet(key string) *convState {
 	if key == "" {
 		return nil
@@ -70,7 +70,7 @@ func convGet(key string) *convState {
 	return st
 }
 
-// convPut 存一路会话，超量就按最旧的淘汰一批。
+// convPut guarda una sesión; si supera el límite, elimina las más antiguas.
 func convPut(key string, st *convState) {
 	if key == "" {
 		return
@@ -80,7 +80,7 @@ func convPut(key string, st *convState) {
 	st.updated = time.Now()
 	convStore[key] = st
 	if len(convStore) > convMax {
-		// 简单淘汰：删掉过期的；还超就删最旧的一小批。
+		// Política simple: primero caducadas; si aún supera, elimina el lote más antiguo.
 		var oldestK string
 		var oldestT time.Time
 		first := true
@@ -239,9 +239,9 @@ func parseConvIDs(raw string) (cid, rid, rcid, tok26 string) {
 	return
 }
 
-// getAnonSession 匿名 GET /app 拿一份 session cookie（NID/COMPASS 等），给匿名多轮当会话
-// 载体。续接请求必须每轮带上它，否则被服务端当新会话（实测不带 0/4 通、带 4/4 通）。
-// 必须走跟正式请求同一出口。
+// getAnonSession hace GET anónimo a /app para obtener cookie de sesión (NID/COMPASS etc.), usada como portador en multironda anónima.
+// Cada reanudación debe llevarla; si no, el servidor trata como nueva sesión (sin ella 0/4 pasan; con ella 4/4).
+// Debe usar el mismo egreso que la solicitud formal.
 func getAnonSession(proxyURL string) (string, error) {
 	req := func() (*http.Response, io.ReadCloser, []string, error) {
 		if proxyURL != "" {
@@ -315,29 +315,30 @@ func streamGenerateConv(prompt string, mc ModelConfig, conv *convState,
 	proxyURL := p.URL
 	pickedOK := p.ID > 0
 
-	// 首轮定出口；续接沿用会话原出口（acquireSlot 已优先，但拿不到原出口时只能换，
-	// 换了续接大概率失败，靠调用方回退到全量重发兜底）。
+	// El primer turno fija el egreso; las continuaciones reutilizan el egreso original de la sesión (acquireSlot ya lo prioriza,
+	// pero si no se obtiene el original solo queda cambiarlo; cambiar el egreso hará fallar la continuación con alta probabilidad,
+	// y el llamador recurre al reenvío completo como respaldo).
 	if conv.turn == 0 {
 		conv.proxyID = p.ID
 		conv.proxyURL = proxyURL
-		// 匿名首轮：没有登录 cookie，就地拿一份 session cookie 当会话载体。
+		// Primer turno anónimo: no hay cookie de login; se obtiene una session cookie in situ como portador de la sesión.
 		if conv.cookie == "" && !conv.isLogin {
 			c, err := getAnonSession(proxyURL)
 			if err != nil {
-				return &StreamResult{ProxyID: p.ID, ProxyName: p.Name}, fmt.Errorf("建匿名会话失败: %w", err)
+				return &StreamResult{ProxyID: p.ID, ProxyName: p.Name}, fmt.Errorf("fallo al crear sesión anónima: %w", err)
 			}
 			conv.cookie = c
 		}
 	}
 
-	// 登录态每轮要带 at（XSRF）；匿名不要。
+	// En estado con login hay que enviar at (XSRF) en cada turno; en anónimo no.
 	xsrf := ""
 	if conv.isLogin && conv.cookie != "" {
 		if tok, err := getXSRF(conv.cookie, proxyURL); err == nil {
 			xsrf = tok
 		} else {
 			return &StreamResult{ProxyID: p.ID, ProxyName: p.Name, AccountID: conv.accountID},
-				fmt.Errorf("取 XSRF 失败: %w", err)
+				fmt.Errorf("fallo al obtener XSRF: %w", err)
 		}
 	}
 
@@ -347,7 +348,7 @@ func streamGenerateConv(prompt string, mc ModelConfig, conv *convState,
 	if conv.turn == 0 {
 		inner[2] = []interface{}{"", "", "", nil, nil, nil, nil, nil, nil, ""}
 	} else {
-		// 续接：[cid, rid, rcid(登录)/""(匿名), null×6, tok26]
+		// Continuación: [cid, rid, rcid(login)/""(anónimo), null×6, tok26]
 		inner[2] = []interface{}{conv.cid, conv.rid, conv.rcid,
 			nil, nil, nil, nil, nil, nil, conv.tok26}
 	}
@@ -434,7 +435,7 @@ func streamGenerateConv(prompt string, mc ModelConfig, conv *convState,
 		}
 		if err != nil || statusCode != 200 || !hasContentFrame(string(raw)) {
 			if err == nil && statusCode == 200 {
-				lastErr = fmt.Errorf("续接无内容帧（会话可能已失效，raw %d 字节）", len(raw))
+				lastErr = fmt.Errorf("continuación sin trama de contenido (la sesión puede haber caducado, raw %d bytes)", len(raw))
 			} else if err != nil {
 				lastErr = err
 			} else {
@@ -451,7 +452,7 @@ func streamGenerateConv(prompt string, mc ModelConfig, conv *convState,
 			}
 			continue
 		}
-		// 成功：回填续接状态。
+		// Éxito: rellenar el estado de continuación.
 		cid, rid, rcid, tok26 := parseConvIDs(string(raw))
 		if cid != "" {
 			conv.cid = cid
@@ -462,7 +463,7 @@ func streamGenerateConv(prompt string, mc ModelConfig, conv *convState,
 		if rcid != "" {
 			conv.rcid = rcid
 		}
-		conv.tok26 = tok26 // 每轮更新（可能为空）
+		conv.tok26 = tok26 // se actualiza cada turno (puede estar vacío)
 		conv.turn++
 		if pickedOK {
 			recordProxyResult(p.ID, true, "")

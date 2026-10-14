@@ -8,18 +8,18 @@ import (
 	"strings"
 )
 
-// MCP（Model Context Protocol）服务器：把 Gemini 网页端的联网搜索暴露成一个
-// web_search 工具，供 Claude Desktop / Claude Code / Cursor 等 MCP 客户端调用。
+// Servidor MCP (Model Context Protocol): expone la búsqueda web del Gemini web como una
+// herramienta web_search, para que la usen clientes MCP como Claude Desktop / Claude Code / Cursor.
 //
-// 传输走 HTTP（Streamable HTTP），挂在后端现有 --port 上的 /mcp，跟 OpenAI 接口
-// 同一个进程、同一个端口——部署成服务器后远程客户端连 URL 就能用，复用现成的
-// 账号池 / 代理池 / 限流。（没做 stdio 那种客户端拉起本地子进程的传输。）
+// El transporte usa HTTP (Streamable HTTP), montado en /mcp sobre el --port existente del backend,
+// en el mismo proceso y el mismo puerto que la interfaz OpenAI —— una vez desplegado como servidor,
+// un cliente remoto se conecta a la URL y listo, reutilizando el pool de cuentas / pool de proxies / limitación de tasa existentes. (No se implementó el transporte stdio, en el que el cliente lanza un subproceso local.)
 //
-// 手写 JSON-RPC 2.0 而不引第三方 SDK：就一个工具、协议面很小（initialize /
-// tools/list / tools/call），手写没有依赖、跟单二进制的风格一致。
+// Se escribe JSON-RPC 2.0 a mano en lugar de importar un SDK de terceros: solo hay una herramienta
+// y la superficie del protocolo es mínima (initialize / tools/list / tools/call), así que hacerlo a mano no añade dependencias y encaja con el estilo de binario único.
 //
-// 搜索走 streamGenerate，白嫖现有的代理池 / 限流 / 重试 / 防封。匿名即可搜，
-// 所以不依赖 cookie 池。
+// La búsqueda usa streamGenerate y aprovecha el pool de proxies / limitación de tasa / reintento / anti-bloqueo existentes.
+// Se puede buscar de forma anónima, así que no depende del pool de cookies.
 
 const mcpProtocolVersion = "2025-06-18"
 
@@ -42,12 +42,12 @@ type rpcError struct {
 	Message string `json:"message"`
 }
 
-// handleMCPHTTP 是 MCP 的 HTTP 传输（Streamable HTTP），挂在后端 `/mcp` 上，跟
-// OpenAI 接口同一个进程、同一个端口，复用现有的账号池 / 代理池 / 限流。
+// handleMCPHTTP es el transporte HTTP de MCP (Streamable HTTP), montado en `/mcp` del backend,
+// en el mismo proceso y el mismo puerto que la interfaz OpenAI, y reutiliza el pool de cuentas / pool de proxies / limitación de tasa existentes.
 //
-// 客户端 POST 一条 JSON-RPC 消息，我们回一条 application/json 响应。工具场景是
-// 纯请求-响应，不需要服务端主动推送，所以不开 SSE 流：GET 直接回 405。
-// 通知类（无 id）按规范回 202 空体。
+// El cliente hace POST de un mensaje JSON-RPC y devolvemos una respuesta application/json. El caso
+// de herramientas es petición-respuesta pura y no necesita envío proactivo del servidor, así que no se abre flujo SSE: GET responde directamente 405.
+// Las notificaciones (sin id) responden 202 con cuerpo vacío según la especificación.
 func handleMCPHTTP(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodOptions:
@@ -57,12 +57,12 @@ func handleMCPHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	case http.MethodGet:
-		// 不提供服务端主动推送的 SSE 流；规范允许这么回。
+		// No se ofrece flujo SSE con envío proactivo del servidor; la especificación permite responder así.
 		w.Header().Set("Allow", "POST")
 		http.Error(w, "this MCP endpoint is POST-only (no server-initiated stream)", http.StatusMethodNotAllowed)
 		return
 	case http.MethodPost:
-		// 落到下面处理
+		// Se maneja más abajo
 	default:
 		w.Header().Set("Allow", "POST")
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -81,7 +81,7 @@ func handleMCPHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	resp := dispatchMCP(&req)
 	if resp == nil {
-		w.WriteHeader(http.StatusAccepted) // 通知：无响应体
+		w.WriteHeader(http.StatusAccepted) // notificación: sin cuerpo de respuesta
 		return
 	}
 	w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -97,7 +97,7 @@ func writeMCPHTTPError(w http.ResponseWriter, id json.RawMessage, code int, msg 
 }
 
 func dispatchMCP(req *rpcRequest) *rpcResponse {
-	// 没有 id 的是通知（notifications/initialized 等），不回响应。
+	// Las que no tienen id son notificaciones (notifications/initialized, etc.) y no devuelven respuesta.
 	if len(req.ID) == 0 {
 		return nil
 	}
@@ -110,7 +110,7 @@ func dispatchMCP(req *rpcRequest) *rpcResponse {
 
 	switch req.Method {
 	case "initialize":
-		// 回显客户端请求的协议版本（拿不到就用我们支持的）。
+		// Hace eco de la versión de protocolo solicitada por el cliente (si no se obtiene, se usa la que soportamos).
 		ver := mcpProtocolVersion
 		var p struct {
 			ProtocolVersion string `json:"protocolVersion"`
@@ -142,11 +142,11 @@ func dispatchMCP(req *rpcRequest) *rpcResponse {
 		}
 		query := strings.TrimSpace(p.Arguments.Query)
 		if query == "" {
-			return ok(toolTextError("query 不能为空"))
+			return ok(toolTextError("query no puede estar vacío"))
 		}
 		text, err := mcpWebSearch(query)
 		if err != nil {
-			return ok(toolTextError("搜索失败: " + err.Error()))
+			return ok(toolTextError("búsqueda fallida: " + err.Error()))
 		}
 		return ok(map[string]interface{}{
 			"content": []interface{}{map[string]interface{}{"type": "text", "text": text}},
@@ -160,7 +160,7 @@ func dispatchMCP(req *rpcRequest) *rpcResponse {
 	}
 }
 
-// webSearchToolDef 是 web_search 工具的定义（含 JSON Schema）。
+// webSearchToolDef es la definición de la herramienta web_search (con JSON Schema).
 func webSearchToolDef() map[string]interface{} {
 	return map[string]interface{}{
 		"name": "web_search",
@@ -180,7 +180,7 @@ func webSearchToolDef() map[string]interface{} {
 	}
 }
 
-// mcpWebSearch 执行一次联网搜索，返回"答案 + 来源清单"的文本。
+// mcpWebSearch ejecuta una búsqueda web y devuelve un texto de "respuesta + lista de fuentes".
 func mcpWebSearch(query string) (string, error) {
 	mc, ok := Models[rtCfg().DefaultModel]
 	if !ok {
@@ -192,7 +192,7 @@ func mcpWebSearch(query string) (string, error) {
 	}
 	text := extractResponseText(res.Raw)
 	if text == "" {
-		return "", fmt.Errorf("上游没有返回内容")
+		return "", fmt.Errorf("el upstream no devolvió contenido")
 	}
 	sources := extractGrounding(res.Raw)
 	var b strings.Builder

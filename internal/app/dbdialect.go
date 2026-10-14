@@ -1,12 +1,12 @@
 package app
 
-// 多数据库方言支持：默认 sqlite，设了 SQL_DSN 环境变量则走 mysql / postgres。
+// Soporte de múltiples dialectos de base de datos: sqlite por defecto; si se define la variable de entorno SQL_DSN, va por mysql / postgres.
 //
-// 为什么不是「加个 env 就行」：
-//   - 占位符：sqlite/mysql 用 ?，postgres 用 $1/$2 —— 全部查询都受影响，靠 rebind 中心重写。
-//   - 建表 DDL：AUTOINCREMENT / 类型 / TEXT 能不能当主键，三家都不一样 —— 靠 schema 转换。
-//   - upsert：INSERT OR REPLACE(sqlite) / REPLACE INTO(mysql) / ON CONFLICT(pg) —— 靠 upsert() 生成。
-// 业务代码里那 ~70 条 ? 查询一条不用改，方言差异全收敛在这个文件。
+// Por qué no basta con «añadir un env»:
+//   - Marcadores de posición: sqlite/mysql usan ?, postgres usa $1/$2 —— todas las consultas se ven afectadas; se reescriben centralmente con rebind.
+//   - DDL de creación de tablas: AUTOINCREMENT / tipos / si TEXT puede ser clave primaria, cada motor es distinto —— se resuelve con conversión de schema.
+//   - upsert: INSERT OR REPLACE(sqlite) / REPLACE INTO(mysql) / ON CONFLICT(pg) —— se genera con upsert().
+// Ninguna de las ~70 consultas con ? del código de negocio hay que tocarla; todas las diferencias de dialecto se concentran en este archivo.
 
 import (
 	"database/sql"
@@ -29,33 +29,33 @@ const (
 	dialectPostgres
 )
 
-// curDialect 在 getDB() 里按 SQL_DSN 设定一次，之后全局只读。
+// curDialect se fija una sola vez en getDB() según SQL_DSN y después es de solo lectura global.
 var curDialect = dialectSQLite
 
-// detectDSN 从 SQL_DSN 认方言，返回 database/sql 驱动名和连接串。
-// SQL_DSN 一旦设置就必须是 mysql/pg（空则不会走到这里，仍是 sqlite）。认不出直接退出。
+// detectDSN reconoce el dialecto a partir de SQL_DSN y devuelve el nombre del driver de database/sql y la cadena de conexión.
+// Si SQL_DSN está definido, debe ser mysql/pg (si está vacío no se llega aquí y sigue siendo sqlite). Si no se reconoce, sale directamente.
 func detectDSN(dsn string) (dbDialect, string, string) {
 	low := strings.ToLower(strings.TrimSpace(dsn))
 	switch {
 	case strings.HasPrefix(low, "postgres://"), strings.HasPrefix(low, "postgresql://"):
-		return dialectPostgres, "postgres", dsn // lib/pq 直接吃 URL
+		return dialectPostgres, "postgres", dsn // lib/pq acepta la URL directamente
 	case strings.HasPrefix(low, "mysql://"):
 		return dialectMySQL, "mysql", mysqlURLToDSN(dsn)
 	case strings.Contains(dsn, "@tcp("):
-		return dialectMySQL, "mysql", ensureMySQLParams(dsn) // go-sql-driver 原生 DSN
+		return dialectMySQL, "mysql", ensureMySQLParams(dsn) // DSN nativo de go-sql-driver
 	default:
-		fmt.Fprintf(os.Stderr, "[db] SQL_DSN 认不出方言（要 postgres:// 或 postgresql:// 或 mysql:// 开头，"+
-			"或 go-sql-driver 的 user:pass@tcp(host:port)/db 形式）: %s\n", dsn)
+		fmt.Fprintf(os.Stderr, "[db] SQL_DSN no reconoce el dialecto (debe empezar por postgres:// o postgresql:// o mysql://, "+
+			"o tener la forma user:pass@tcp(host:port)/db de go-sql-driver): %s\n", dsn)
 		os.Exit(1)
 		return dialectSQLite, "", ""
 	}
 }
 
-// mysqlURLToDSN 把 mysql://user:pass@host:port/db?x=y 转成 go-sql-driver 的 user:pass@tcp(host:port)/db?x=y。
+// mysqlURLToDSN convierte mysql://user:pass@host:port/db?x=y a la forma user:pass@tcp(host:port)/db?x=y de go-sql-driver.
 func mysqlURLToDSN(raw string) string {
 	u, err := url.Parse(raw)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "[db] mysql DSN 解析失败: %v\n", err)
+		fmt.Fprintf(os.Stderr, "[db] fallo al analizar el DSN de mysql: %v\n", err)
 		os.Exit(1)
 	}
 	cred := ""
@@ -83,7 +83,7 @@ func ensureMySQLParams(dsn string) string {
 	return dsn
 }
 
-// ── 占位符 shim：getDB() 返回 *dbx，业务代码照常 .Exec/.Query/.QueryRow/.Begin ──────
+// ── shim de marcadores de posición: getDB() devuelve *dbx y el código de negocio sigue usando .Exec/.Query/.QueryRow/.Begin ──────
 
 type dbx struct{ raw *sql.DB }
 
@@ -106,7 +106,7 @@ func (t *txx) QueryRow(q string, a ...any) *sql.Row        { return t.raw.QueryR
 func (t *txx) Commit() error                               { return t.raw.Commit() }
 func (t *txx) Rollback() error                             { return t.raw.Rollback() }
 
-// rebind 把 ? 顺序换成 $1,$2…（仅 postgres）。我们所有查询里都没有含 ? 的字符串字面量，顺序替换安全。
+// rebind sustituye los ? en orden por $1,$2… (solo postgres). Ninguna de nuestras consultas tiene literales de cadena con ?, así que la sustitución secuencial es segura.
 func rebind(q string) string {
 	if curDialect != dialectPostgres {
 		return q
@@ -125,8 +125,8 @@ func rebind(q string) string {
 	return b.String()
 }
 
-// insertID 执行 INSERT 并返回自增主键。pg（lib/pq）不支持 LastInsertId，改用 RETURNING id。
-// query 里不要带结尾分号；主键列名固定为 id。
+// insertID ejecuta un INSERT y devuelve la clave primaria autoincremental. pg (lib/pq) no soporta LastInsertId, así que usa RETURNING id.
+// La query no debe llevar punto y coma final; el nombre de la columna de clave primaria es siempre id.
 func insertID(query string, args ...any) (int64, error) {
 	if curDialect == dialectPostgres {
 		var id int64
@@ -140,7 +140,7 @@ func insertID(query string, args ...any) (int64, error) {
 	return res.LastInsertId()
 }
 
-// upsert 生成方言相容的「插入或按主键覆盖」语句。cols 是全部列（含主键），pk 是主键列。
+// upsert genera una sentencia «insertar o sobrescribir por clave primaria» compatible con el dialecto. cols son todas las columnas (incluida la clave primaria) y pk son las columnas de clave primaria.
 func upsert(table string, cols, pk []string) string {
 	ph := "?" + strings.Repeat(",?", len(cols)-1)
 	collist := strings.Join(cols, ", ")
@@ -165,34 +165,34 @@ func upsert(table string, cols, pk []string) string {
 	}
 }
 
-// ── schema 按方言转换 ────────────────────────────────────────────────────────────
+// ── conversión de schema según el dialecto ────────────────────────────────────────────────────────
 
 var (
 	reAutoPK      = regexp.MustCompile(`INTEGER PRIMARY KEY AUTOINCREMENT`)
 	reInteger     = regexp.MustCompile(`\bINTEGER\b`)
 	reTextDefault = regexp.MustCompile(`TEXT NOT NULL DEFAULT ('[^']*')`)
-	reModelText   = regexp.MustCompile(`model\s+TEXT NOT NULL`) // model 进了复合主键/索引，mysql 里 TEXT 不能当键
+	reModelText   = regexp.MustCompile(`model\s+TEXT NOT NULL`) // model entra en una clave primaria compuesta/índice; en mysql TEXT no puede ser clave
 	reIdxIfExists = regexp.MustCompile(`(?i)CREATE INDEX IF NOT EXISTS`)
 )
 
-// schemaStatements 把 sqlite 版 schema 转成目标方言、切成单条语句（mysql/pg 驱动默认不支持多语句 Exec）。
+// schemaStatements convierte el schema de sqlite al dialecto objetivo y lo corta en sentencias sueltas (los drivers de mysql/pg no soportan Exec multi-sentencia por defecto).
 func schemaStatements(d dbDialect) []string {
 	s := schema
 	switch d {
 	case dialectMySQL:
 		s = reAutoPK.ReplaceAllString(s, "BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY")
-		// mysql 的 TEXT 不能直接做主键/索引/带 DEFAULT，短文本列改 VARCHAR。
+		// en mysql TEXT no puede ser directamente clave primaria / índice / llevar DEFAULT; las columnas de texto corto se cambian a VARCHAR.
 		s = strings.ReplaceAll(s, "TEXT PRIMARY KEY", "VARCHAR(255) PRIMARY KEY")
 		s = reModelText.ReplaceAllString(s, "model VARCHAR(255) NOT NULL")
 		s = reTextDefault.ReplaceAllString(s, "VARCHAR(512) NOT NULL DEFAULT $1")
 		s = reInteger.ReplaceAllString(s, "BIGINT")
-		s = reIdxIfExists.ReplaceAllString(s, "CREATE INDEX") // mysql 不支持 CREATE INDEX IF NOT EXISTS
+		s = reIdxIfExists.ReplaceAllString(s, "CREATE INDEX") // mysql no soporta CREATE INDEX IF NOT EXISTS
 	case dialectPostgres:
 		s = reAutoPK.ReplaceAllString(s, "BIGSERIAL PRIMARY KEY")
 		s = reInteger.ReplaceAllString(s, "BIGINT")
 	}
-	// 先逐行剥掉 -- 行内注释再按 ; 切：注释里可能带分号（如 cookie 串 "k=v; k=v"），
-	// 直接 split 会把语句从注释中间切断。本 schema 的字符串字面量里没有 --，直接截安全。
+	// Primero se eliminan línea a línea los comentarios -- y luego se corta por ;: los comentarios pueden llevar punto y coma (p. ej. la cadena de cookie "k=v; k=v"),
+	// y un split directo cortaría la sentencia por medio del comentario. En los literales de cadena de este schema no hay --, así que el recorte directo es seguro.
 	var clean strings.Builder
 	for _, ln := range strings.Split(s, "\n") {
 		if i := strings.Index(ln, "--"); i >= 0 {

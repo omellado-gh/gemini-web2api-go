@@ -5,17 +5,21 @@ import (
 	"testing"
 )
 
-// 判据：prompt 超过单请求上限时**明确报错**，绝不悄悄改动内容。
+// Criterio: cuando el prompt supera el límite de una petición se **informa de un error claro**;
+// nunca se altera el contenido en silencio.
 //
-// 上游超限时从**尾部**静默截断且不报错，而最新消息拼在末尾，所以被吃掉的正好是
-// 用户刚问的那句 —— 模型只看到前面的系统前言，回一句通用开场白，既不答题也不
-// 调工具。实测两个不同客户端的用户都栽在这上面，都被误认成"模型变笨"。
+// Cuando el upstream se pasa del límite, trunca en silencio por el **final** sin dar error, y como
+// el mensaje más reciente va al final, lo que se come es justo la frase que acaba de preguntar el
+// usuario: el modelo solo ve el preámbulo de sistema y responde con una introducción genérica, sin
+// contestar ni llamar a herramientas. En pruebas reales, usuarios de dos clientes distintos cayeron
+// en esto y ambos lo interpretaron como "el modelo se volvió tonto".
 //
-// 我们自己丢历史同样不行：那还是静默丢数据，只是换了个地方丢。客户端以为整段都
-// 发出去了，模型却忘了东西。报 context_length_exceeded 是 OpenAI 兼容客户端认得
-// 的信号，agentic 客户端收到会自己压缩上下文再试。
+// Descartar historial nosotros tampoco vale: sigue siendo pérdida silenciosa de datos, solo que en
+// otro sitio. El cliente cree que se envió todo, pero el modelo olvidó cosas. Devolver
+// context_length_exceeded es la señal que reconocen los clientes compatibles con OpenAI; un cliente
+// agentic que la recibe comprime el contexto por su cuenta y reintenta.
 
-func withBudget(t *testing.T, n int) { // n = 字节预算
+func withBudget(t *testing.T, n int) { // n = presupuesto en bytes
 	t.Helper()
 	old := rtCfg()
 	next := old

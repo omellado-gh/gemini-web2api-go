@@ -29,7 +29,7 @@ func maskKey(k string) string {
 	return k[:12] + "..." + k[len(k)-4:]
 }
 
-// Run 是进程入口，由根目录的 main.go 调用。
+// Run es el punto de entrada del proceso; lo llama el main.go del directorio raíz.
 func Run() {
 	port := flag.Int("port", 0, "listening port (default: 8083 or config.json)")
 	configPath := flag.String("config", "", "path to config.json")
@@ -75,10 +75,10 @@ func Run() {
 
 	// boot DB and load proxy pool
 	getDB()
-	initRuntimeConfig() // 面板改过的运行时配置盖在启动配置之上
+	initRuntimeConfig() // la configuración en tiempo de ejecución modificada en el panel se superpone sobre la de arranque
 	loadProxies()
-	seedProxiesFromConfig() // --proxy / 遗留静态代理并进代理池
-	seedCookiesFromConfig() // --cookie-file / 遗留单 cookie 并进 cookie 池
+	seedProxiesFromConfig() // --proxy / los proxies estáticos heredados se incorporan al pool de proxies
+	seedCookiesFromConfig() // --cookie-file / la cookie única heredada se incorpora al pool de cookies
 	resolvedAPIKey := initAPIKey(*apiKey)
 	initTokenizer()
 	startScheduler()
@@ -114,11 +114,11 @@ func Run() {
 			writeJSON(w, 405, map[string]string{"error": "method not allowed"})
 		}
 	}))
-	// /v1/videos —— OpenAI(Sora) 形状的异步视频生成。POST 建任务，GET 轮询，GET .../content 下 MP4。
+	// /v1/videos —— generación asíncrona de vídeo con la forma de OpenAI(Sora). POST crea la tarea, GET hace polling, GET .../content descarga el MP4.
 	mux.HandleFunc("/v1/videos", requireAPIKey(handleCreateVideo))
 	mux.HandleFunc("/v1/videos/", requireAPIKey(handleVideoItem))
-	// MCP over HTTP（Streamable HTTP）：跟 OpenAI 接口同进程同端口，暴露 web_search。
-	// 用同一把 API key 鉴权，客户端配 Authorization: Bearer <key> 连这个 URL。
+	// MCP over HTTP (Streamable HTTP): mismo proceso y mismo puerto que la interfaz OpenAI, expone web_search.
+	// Se autentica con la misma API key; el cliente configura Authorization: Bearer <key> para conectarse a esta URL.
 	mux.HandleFunc("/mcp", requireAPIKey(handleMCPHTTP))
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/" {
@@ -191,7 +191,7 @@ func Run() {
 		tokInfo = "tiktoken cl100k_base"
 	}
 	fmt.Printf("  Tokenizer:   %s\n", tokInfo)
-	fmt.Printf("  Per-IP 限流: 并发=%d / RPM=%d / RPH=%d\n",
+	fmt.Printf("  Per-IP limitación de tasa: concurrencia=%d / RPM=%d / RPH=%d\n",
 		rtCfg().PerIPConcurrent, rtCfg().PerIPRPM, rtCfg().PerIPRPH)
 	fmt.Printf("  Retry:       %dx / %ds\n", rtCfg().RetryAttempts, rtCfg().RetryDelaySec)
 	fmt.Println()
@@ -203,16 +203,16 @@ func Run() {
 	}
 }
 
-// warnEnvProxyIgnored 在设了代理环境变量、但代理池是空的时候提醒一句。
+// warnEnvProxyIgnored avisa cuando hay variables de entorno de proxy definidas pero el pool de proxies está vacío.
 //
-// Linux 上的惯例是 HTTP 客户端自动读 HTTP_PROXY / ALL_PROXY（Go 标准库有现成的
-// http.ProxyFromEnvironment），我们用的是显式 http.ProxyURL，一个都不读。这是
-// 有意的：宿主机上随手一个 export 会悄悄改变出口 IP，而面板仍显示直连，排查时
-// 会被带偏。但"没生效且毫无反馈"同样难查 —— 有用户按 systemd drop-in 的常规做法
-// 注入了这几个变量，折腾很久才发现要在面板配。所以不读归不读，得说一声。
+// En Linux la costumbre es que el cliente HTTP lea automáticamente HTTP_PROXY / ALL_PROXY (la biblioteca estándar de Go ya trae
+// http.ProxyFromEnvironment), pero nosotros usamos http.ProxyURL explícito y no las leemos ninguna. Es
+// intencional: un export cualquiera en el host cambiaría silenciosamente la IP de salida mientras el panel sigue mostrando Directo, y al depurar
+// llevaría a engaño. Pero "no surte efecto y no da ninguna señal" también es difícil de diagnosticar: hay usuarios que inyectaron estas variables siguiendo la práctica habitual de un systemd drop-in
+// y tardaron mucho en descubrir que había que configurarlo en el panel. Así que, aunque no las leamos, hay que avisar.
 func warnEnvProxyIgnored() {
-	// 大小写两种写法都查，但只报一个名字：Windows 的环境变量大小写不敏感，
-	// 全列出来会变成 "HTTPS_PROXY / https_proxy" 这种看着像两个变量的噪音。
+	// Se comprueban ambas grafías, mayúsculas y minúsculas, pero solo se reporta un nombre: en Windows las variables de entorno no distinguen mayúsculas de minúsculas,
+	// y listarlas todas generaría ruido como "HTTPS_PROXY / https_proxy", que parece que son dos variables.
 	var set []string
 	for _, k := range []string{"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"} {
 		if os.Getenv(k) != "" || os.Getenv(strings.ToLower(k)) != "" {
@@ -222,7 +222,7 @@ func warnEnvProxyIgnored() {
 	if len(set) == 0 || len(listProxies()) > 0 {
 		return
 	}
-	fmt.Printf("  ⚠ 检测到代理环境变量 %s，但本程序**不读**它们，当前走直连。\n"+
-		"    请在面板「代理池」添加，或用 --proxy 启动参数（它会在启动时导入代理池）。\n\n",
+	fmt.Printf("  ⚠ Se detectaron variables de entorno de proxy %s, pero este programa **no las lee**; actualmente va por Directo.\n"+
+		"    Añádelo en «pool de proxies» del panel, o usa el parámetro de arranque --proxy (que lo importa al pool de proxies al iniciar).\n\n",
 		strings.Join(set, " / "))
 }

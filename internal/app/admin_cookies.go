@@ -8,16 +8,18 @@ import (
 	"strings"
 )
 
-// keyCookieWants 是判断一条 cookie 是否"复制全了"要看的关键项。
+// keyCookieWants son las claves que se miran para saber si una cookie se ha "copiado entera".
 //
-// 抓包实测浏览器每次发往 gemini.google.com 的有 30 个 cookie，其中 16 个是
-// 每请求必带的登录态项。这里只挑最能反映"复制全没全"的几个来展示，不是说
-// 别的不重要 —— 我们把整串原样转发，少一个就是少发一个。
+// En capturas reales, el navegador envía 30 cookies a gemini.google.com en cada petición, de
+// las cuales 16 son elementos de sesión que van siempre. Aquí solo se eligen las que mejor
+// reflejan si "se copió todo" para mostrarlas, no porque las demás no importen: reenviamos la
+// cadena entera tal cual, y una de menos es una que no se envía.
 var keyCookieWants = []string{"SID", "HSID", "SSID", "APISID", "SAPISID",
 	"__Secure-1PSID", "__Secure-1PSIDTS", "__Secure-1PAPISID", "__Secure-1PSIDCC"}
 
-// cookieAcctView 是账号的脱敏视图：**不含完整 cookie 值**，只回状态摘要。
-// 凭证没必要从服务端再发回浏览器一次（跟旧 handleAdminCookie 同原则）。
+// cookieAcctView es la vista desensibilizada de una cuenta: **no incluye el valor completo de
+// la cookie**, solo un resumen de estado. No hace falta enviar las credenciales del servidor
+// al navegador otra vez (mismo principio que el antiguo handleAdminCookie).
 func cookieAcctView(a CookieAccount) map[string]interface{} {
 	names := cookieNames(a.Cookie)
 	nameSet := map[string]bool{}
@@ -34,13 +36,16 @@ func cookieAcctView(a CookieAccount) map[string]interface{} {
 	if s := extractSAPISID(a.Cookie); len(s) >= 4 {
 		tail = s[len(s)-4:]
 	}
-	// health 是给面板标红用的派生健康度（#18）。判据用 fail_count：markAccountResult
-	// 成功会把它清零、失败才 +1，而且只有 401/403 才算失败（见 markCookieByStatus），
-	// 所以 fail_count>0 就是「当前鉴权在失败」= 多半 cookie 过期了，直接标红提示重导。
-	//   dead     鉴权失败中（红）—— 不管启用还是被自动停用，只要 fail_count>0
-	//   disabled 用户手动停用且没有失败记录（灰）
-	//   unknown  还没成功用过/检测过（待检测）
-	//   ok       在用、没失败（绿）
+	// health es la salud derivada para marcar en rojo en el panel (#18). El criterio usa
+	// fail_count: markAccountResult lo pone a cero al tener éxito y solo lo incrementa al
+	// fallar, y solo el 401/403 cuenta como fallo (ver markCookieByStatus), así que
+	// fail_count>0 significa "la autenticación actual está fallando" = lo más probable es que
+	// la cookie haya caducado; se marca en rojo y se pide reimportar.
+	//   dead     autenticación fallando (rojo): tanto si está habilitada como si se desactivó
+	//            automáticamente, basta con que fail_count>0
+	//   disabled desactivada a mano por el usuario y sin registros de fallo (gris)
+	//   unknown  aún no se ha usado ni comprobado con éxito (pendiente de comprobar)
+	//   ok       en uso y sin fallos (verde)
 	health := "ok"
 	switch {
 	case a.FailCount > 0:
@@ -70,7 +75,7 @@ func cookieAcctView(a CookieAccount) map[string]interface{} {
 	}
 }
 
-// handleAdminCookies — GET 列出池 / POST 新增一条。
+// handleAdminCookies: GET lista el pool / POST añade una nueva.
 func handleAdminCookies(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
@@ -99,18 +104,18 @@ func handleAdminCookies(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, 400, map[string]string{"error": err.Error()})
 			return
 		}
-		logf("[cookies] 新增账号 #%d label=%q", id, strings.TrimSpace(p.Label))
+		logf("[cookies] nueva cuenta #%d label=%q", id, strings.TrimSpace(p.Label))
 		writeJSON(w, 200, map[string]interface{}{"id": id})
 	default:
 		writeJSON(w, 405, map[string]string{"error": "method not allowed"})
 	}
 }
 
-// handleAdminCookieItem — /admin/api/cookies/{id}[/toggle]
+// handleAdminCookieItem: /admin/api/cookies/{id}[/toggle]
 //
-//	DELETE          删除
-//	POST .../toggle 翻转 enabled/disabled
-//	PATCH           改 label / note / status
+//	DELETE          borrar
+//	POST .../toggle alternar enabled/disabled
+//	PATCH           cambiar label / note / status
 func handleAdminCookieItem(w http.ResponseWriter, r *http.Request) {
 	rest := strings.TrimPrefix(r.URL.Path, "/admin/api/cookies/")
 	parts := strings.Split(rest, "/")
@@ -134,7 +139,7 @@ func handleAdminCookieItem(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, 500, map[string]string{"error": err.Error()})
 			return
 		}
-		logf("[cookies] 删除账号 #%d", id)
+		logf("[cookies] borrada la cuenta #%d", id)
 		writeJSON(w, 200, map[string]bool{"ok": true})
 	case http.MethodPost:
 		if action == "rotate" {
@@ -145,9 +150,9 @@ func handleAdminCookieItem(w http.ResponseWriter, r *http.Request) {
 						writeJSON(w, 200, map[string]interface{}{"ok": false, "detail": err.Error()})
 						return
 					}
-					detail := "保活成功"
+					detail := "Mantenimiento con éxito"
 					if len(names) > 0 {
-						detail = "保活成功，刷新了 " + strings.Join(names, ", ")
+						detail = "Mantenimiento con éxito, refrescadas " + strings.Join(names, ", ")
 					}
 					writeJSON(w, 200, map[string]interface{}{
 						"ok": true, "detail": detail, "refreshed": names, "next_sec": int(iv.Seconds())})
@@ -205,7 +210,7 @@ func handleAdminCookieItem(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if p.Label != nil || p.Note != nil {
-			// 只改传了的字段：没传的沿用当前值。
+			// Solo se cambian los campos enviados: los no enviados conservan el valor actual.
 			var curLabel, curNote string
 			for _, a := range accountList() {
 				if a.ID == id {
