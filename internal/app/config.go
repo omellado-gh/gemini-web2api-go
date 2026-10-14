@@ -16,37 +16,46 @@ type Config struct {
 	DefaultModel   string `json:"default_model"`
 	LogRequests    bool   `json:"log_requests"`
 	CookieFile     string `json:"cookie_file"`
-	Proxy          string `json:"proxy"` // 只用于启动时播种代理池，见 seedProxiesFromConfig
+	Proxy          string `json:"proxy"` // solo se usa para sembrar el pool de proxies al arranque; ver seedProxiesFromConfig
 	Impersonate    string `json:"impersonate"`
 	DBPath         string `json:"db_path"`
 	AdminToken     string `json:"admin_token"`
 	AdminEnabled   bool   `json:"admin_enabled"`
 	RetentionDays  int    `json:"retention_days"`
 
-	// Per-IP rate limit (一个 slot = 直连/或一个代理),0 表示不限。
-	// 默认值取实测区间 80-180 的下沿，详见 ratelimit.go 的说明。
-	PerIPConcurrent int `json:"per_ip_concurrent"` // 瞬时并发上限
-	PerIPRPM        int `json:"per_ip_rpm"`        // 每分钟请求上限
-	PerIPRPH        int `json:"per_ip_rph"`        // 每小时请求上限
+	// Per-IP rate limit (un slot = Directo/o un proxy), 0 significa sin límite.
+	// El valor por defecto toma el extremo inferior del rango medido 80-180; ver la explicación en ratelimit.go.
+	PerIPConcurrent int `json:"per_ip_concurrent"` // límite de concurrencia instantánea
+	PerIPRPM        int `json:"per_ip_rpm"`        // límite de peticiones por minuto
+	PerIPRPH        int `json:"per_ip_rph"`        // límite de peticiones por hora
 
-	// 代理连续失败熔断后隔多久放回池子（分钟），0 = 不恢复。
+	// Cuánto tiempo, en minutos, se espera antes de devolver al pool un proxy tras cortarlo por fallos consecutivos; 0 = no se recupera.
 	ProxyCooldownMin int `json:"proxy_cooldown_min"`
-	// 代理池无可用出口时是否退回直连。默认 false。
+	// Si se retrocede a Directo cuando el pool de proxies no tiene salida disponible. Por defecto false.
 	FallbackDirect bool `json:"fallback_direct"`
-	// cookie 失效时是否降级成匿名继续跑。默认 false。
+	// Si se degrada a anónimo y se sigue cuando caduca la cookie. Por defecto false.
 	FallbackAnon bool `json:"fallback_anon"`
-	// 是否自动从 /app 页面抓最新 bl 版本号。默认 true。
+	// Si se obtiene automáticamente de la página /app el último número de versión bl. Por defecto true.
 	GeminiBLAuto bool `json:"gemini_bl_auto"`
-	// 单次请求 prompt 的 UTF-8 字节上限，0 = 不限。
+	// Límite superior en bytes UTF-8 del prompt de una sola petición; 0 = sin límite.
 	MaxPromptBytes int `json:"max_prompt_bytes"`
-	// 是否走 Gemini 原生 conversation_id 服务端多轮。默认 false，见 conversation.go。
+	// Si se usa la conversación nativa de servidor de Gemini vía conversation_id. Por defecto false; ver conversation.go.
 	MultiTurn bool `json:"multi_turn"`
-	// 出完结果是否自动删掉 gemini.google.com 上留下的这条会话（#19，rpc GzXR5e）。
-	// 只登录态生效（删除要 XSRF）；异步 best-effort，删失败只记日志不影响响应。默认 false。
+	// Si al terminar el resultado se borra automáticamente esta conversación dejada en gemini.google.com (#19, rpc GzXR5e).
+	// Solo surte efecto con sesión iniciada (borrar requiere XSRF); asíncrono best-effort: si falla el borrado solo se registra en el log sin afectar a la respuesta. Por defecto false.
 	AutoDeleteConversation bool `json:"auto_delete_conversation"`
-	// 匿名优先（#20）：这次请求不需要登录态能力（纯文本、非思考、无工具、无图）时
-	// 不占用 cookie 账号，走匿名省额度；需要登录才挑号。默认 false。见 modelNeedsLogin。
+	// Anónimo primero (#20): cuando esta petición no necesita capacidades con sesión iniciada (texto plano, sin pensamiento, sin herramientas, sin imagen)
+	// no ocupa una cuenta con cookie y va por anónimo para ahorrar cuota; solo se elige cuenta cuando hace falta iniciar sesión. Por defecto false. Ver modelNeedsLogin.
 	AnonFirst bool `json:"anon_first"`
+	// Arranque forzado del bucle de herramientas: en el primer turno de una sesión con tools y
+	// con tool_choice auto/ausente, se eleva a "required" para que el modelo empiece a actuar
+	// (listar/leer) en vez de responder en prosa. Opt-in; por defecto false.
+	//
+	// Cambia la semántica de la petición del cliente: un "auto" pasa a "required", así que puede
+	// forzar una llamada incluso cuando el mensaje no necesita ninguna (p. ej. una pregunta de
+	// chat dentro de una sesión con tools), y puede romper a clientes que dependen de "auto". Es
+	// una muleta para modelos débiles; con 3.1 Pro conviene dejarlo desactivado.
+	ForceToolFirstTurn bool `json:"force_tool_first_turn"`
 }
 
 var (
@@ -71,23 +80,24 @@ func defaultConfig() Config {
 		AdminToken:     "",
 		AdminEnabled:   true,
 		RetentionDays:  30,
-		// 单出口实测 80-180 次不等（连接策略和出口质量决定），静态 IP 上 188。
-		// RPH 取下沿 80 保守留量；按低速率跑的部署可以调高很多 ——
-		// 10 次/分钟连打 800 次、跨 110 分钟一次没被拦。
+		// Por salida medida varía entre 80-180 (lo determinan la estrategia de conexión y la calidad de la salida); en IP estática 188.
+		// El RPH toma el extremo inferior 80 de forma conservadora; un despliegue a baja tasa puede subirlo mucho:
+		// 10 peticiones/minuto seguidas 800 veces, a lo largo de 110 minutos, ninguna fue bloqueada.
 		PerIPConcurrent: 5,
 		PerIPRPM:        30,
 		PerIPRPH:        80,
-		// 实测被拦的出口 106-121 分钟自动恢复，冷却取 120 分钟。
+		// Las salidas bloqueadas se recuperan solas en 106-121 minutos, medido; el cooldown se toma en 120 minutos.
 		ProxyCooldownMin: 120,
 		FallbackDirect:   false,
 		FallbackAnon:     false,
 		GeminiBLAuto:     true,
-		// 实测上游的墙在约 13 万 UTF-8 字节：129,950 字节中英文各 3/3 过，
-		// 135,990 字节各 1/3，141,920 字节各 1/3。取 128000 留一点余量。
+		// El muro del upstream medido está en unos 130 mil bytes UTF-8: 129.950 bytes pasan 3/3 tanto en chino como en inglés,
+		// 135.990 bytes pasan 1/3 en cada uno, 141.920 bytes pasan 1/3 en cada uno. Se toma 128000 para dejar un margen.
 		MaxPromptBytes:         128000,
 		MultiTurn:              false,
 		AutoDeleteConversation: false,
 		AnonFirst:              false,
+		ForceToolFirstTurn:     false,
 	}
 }
 

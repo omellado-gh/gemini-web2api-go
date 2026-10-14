@@ -104,12 +104,27 @@ func (s *sseWriter) SendToolCalls(tcs []ToolCall) {
 	s.chunk(map[string]interface{}{"tool_calls": out}, nil, nil)
 }
 
-// Finish 收尾：空 delta + finish_reason，可选 usage chunk，最后 [DONE]。
+// SendToolCallDelta emite UNA tool_call como delta. Se usa para emitir cada llamada en el
+// momento en que se cierra su bloque en el stream, en vez de acumular todas hasta el final.
+func (s *sseWriter) SendToolCallDelta(index int, tc ToolCall) {
+	s.start()
+	s.chunk(map[string]interface{}{"tool_calls": []map[string]interface{}{{
+		"index": index,
+		"id":    tc.ID,
+		"type":  tc.Type,
+		"function": map[string]interface{}{
+			"name":      tc.Function.Name,
+			"arguments": tc.Function.Arguments,
+		},
+	}}}, nil, nil)
+}
+
+// Finish cierra el stream: delta vacío + finish_reason, opcional chunk usage, luego [DONE].
 func (s *sseWriter) Finish(reason string, usage map[string]int) {
 	s.start()
 	s.chunk(map[string]interface{}{}, reason, nil)
 	if usage != nil {
-		// OpenAI 的 usage chunk：choices 为空数组
+		// Chunk usage de OpenAI: choices debe ser array vacío.
 		c := map[string]interface{}{
 			"id": s.id, "object": "chat.completion.chunk",
 			"created": s.created, "model": s.model,

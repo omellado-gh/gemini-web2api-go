@@ -43,62 +43,63 @@ func longConversation(turns int) []map[string]interface{} {
 }
 
 func TestPromptOverLimitErrors(t *testing.T) {
-	withBudget(t, 20000) // 字节
+	withBudget(t, 20000) // bytes
 
-	prompt, _ := messagesToPrompt(longConversation(200), nil, nil)
+	prompt, _ := messagesToPrompt(longConversation(200), nil, nil, false)
 	if len(prompt) <= 20000 {
-		t.Fatalf("测试用例本身没超预算（%d 字节）", len(prompt))
+		t.Fatalf("el propio caso de prueba no superó el presupuesto (%d bytes)", len(prompt))
 	}
-	// 错误信息要说清为什么被拒，否则用户只会以为是我们坏了
+	// el mensaje de error debe explicar por qué se rechazó; si no, el usuario pensará que estamos rotos
 	noCookie := error(&PromptTooLongError{Bytes: len(prompt), Budget: 20000})
 	for _, want := range []string{"truncates", "latest message", "not tokens"} {
 		if !strings.Contains(noCookie.Error(), want) {
-			t.Errorf("错误信息缺少 %q: %v", want, noCookie)
+			t.Errorf("al mensaje de error le falta %q: %v", want, noCookie)
 		}
 	}
-	// 没 cookie 时这不是死路，要告诉用户导一个进来就能走附件
+	// sin cookie esto no es un callejón sin salida: hay que decirle al usuario que importando una podrá usar adjuntos
 	for _, want := range []string{"Cookie pool", "attachment"} {
 		if !strings.Contains(noCookie.Error(), want) {
-			t.Errorf("没 cookie 时该提示导入 cookie，缺 %q: %v", want, noCookie)
+			t.Errorf("sin cookie debería sugerir importar una cookie, falta %q: %v", want, noCookie)
 		}
 	}
-	// 有 cookie 却还超 = 附件那条路也没救回来，就别再让人去导 cookie 了
+	// tener cookie y aun así pasarse = la vía de adjuntos tampoco lo salvó; ya no hay que mandar a importar una cookie
 	withCookie := error(&PromptTooLongError{Bytes: len(prompt), Budget: 20000, HasCookie: true})
 	if strings.Contains(withCookie.Error(), "Cookie pool") {
-		t.Error("已经有 cookie 了还提示去导 cookie")
+		t.Error("ya hay cookie y aun así se sugiere importar una cookie")
 	}
 	if !strings.Contains(withCookie.Error(), "Shorten") {
-		t.Error("有 cookie 时该提示压缩内容")
+		t.Error("con cookie debería sugerir comprimir el contenido")
 	}
 }
 
-// 没超限时一个字都不能动——包括不能有任何"省略了部分历史"之类的注入。
+// Sin pasarse del límite no se puede tocar ni un carácter, incluida cualquier inyección del tipo "se omitió parte del historial".
 func TestPromptUnderLimitUntouched(t *testing.T) {
 	withBudget(t, 10000000)
 	msgs := longConversation(3)
 
-	got, _ := messagesToPrompt(msgs, nil, nil)
-	if want := buildPrompt(msgs, nil, nil); got != want {
-		t.Error("没超限却改动了 prompt")
+	got, _ := messagesToPrompt(msgs, nil, nil, false)
+	if want := buildPrompt(msgs, nil, nil, false); got != want {
+		t.Error("no se superó el límite y aun así se modificó el prompt")
 	}
 	if !strings.Contains(got, "读取一下 task.md") {
-		t.Error("最新提问不在 prompt 里")
+		t.Error("la pregunta más reciente no está en el prompt")
 	}
 }
 
-// 0 = 关掉检查，退回旧行为（原样发出，由上游从尾部截断）。
+// 0 = desactiva la comprobación y vuelve al comportamiento antiguo (se envía tal cual; el upstream trunca por el final).
 func TestPromptLimitDisabled(t *testing.T) {
 	withBudget(t, 0)
 	msgs := longConversation(200)
 
-	got, _ := messagesToPrompt(msgs, nil, nil)
+	got, _ := messagesToPrompt(msgs, nil, nil, false)
 	if len(got) < 20000 {
-		t.Error("关掉检查后不该有任何裁剪")
+		t.Error("con la comprobación desactivada no debería haber ningún recorte")
 	}
 }
 
-// 上限判的是**整个 prompt**，工具定义也算进去——agentic 客户端的工具 schema
-// 往往比对话本身还大，不算进去等于没设防。
+// El límite se aplica al **prompt completo**, y las definiciones de herramientas cuentan: el esquema
+// de herramientas de un cliente agentic suele ser mayor que la propia conversación; no contarlo es
+// como no poner defensa.
 func TestPromptLimitCountsToolDefs(t *testing.T) {
 	withBudget(t, 5000)
 	tools := []map[string]interface{}{{"type": "function", "function": map[string]interface{}{
@@ -106,7 +107,7 @@ func TestPromptLimitCountsToolDefs(t *testing.T) {
 		"parameters": map[string]interface{}{"type": "object"}}}}
 	msgs := []map[string]interface{}{{"role": "user", "content": "你好"}}
 
-	if p, _ := messagesToPrompt(msgs, tools, nil); len(p) <= 5000 {
-		t.Errorf("工具定义应该把 prompt 撑到 5000 字节以上，实际 %d", len(p))
+	if p, _ := messagesToPrompt(msgs, tools, nil, false); len(p) <= 5000 {
+		t.Errorf("las definiciones de herramientas deberían llevar el prompt por encima de 5000 bytes; en realidad %d", len(p))
 	}
 }

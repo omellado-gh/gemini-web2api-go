@@ -679,15 +679,15 @@ func classifyError(errStr string) string {
 		return "upstream_429"
 	case strings.Contains(errStr, "upstream HTTP"):
 		return "upstream_http_error"
-	case strings.Contains(errStr, "unknown model"), strings.Contains(errStr, "not supported"):
+	case strings.Contains(errStr, "unknown model"), strings.Contains(errStr, "modelo desconocido"), strings.Contains(errStr, "not supported"):
 		return "bad_request"
 	default:
-		// 连不上代理 / DNS / TLS 握手失败之类
+		// no se puede conectar al proxy / DNS / fallo de handshake TLS, etc.
 		return "network"
 	}
 }
 
-// errorBreakdown 统计窗口内各类错误的次数。
+// errorBreakdown cuenta las veces de cada tipo de error dentro de la ventana.
 func errorBreakdown(since int64) []map[string]interface{} {
 	rows, err := getDB().Query(
 		`SELECT COALESCE(error,''), COUNT(*) FROM requests

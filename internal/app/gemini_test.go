@@ -430,10 +430,10 @@ func TestClassifyError(t *testing.T) {
 	}
 }
 
-// mustPrompt 是测试里的便捷包装：messagesToPrompt 现在会在 prompt 超长时返回错误。
+// mustPrompt es un envoltorio cómodo para los tests: messagesToPrompt ahora devuelve error cuando el prompt es demasiado largo.
 func mustPrompt(t *testing.T, msgs []map[string]interface{}, tools []map[string]interface{},
 	toolChoice interface{}) string {
 	t.Helper()
-	p, _ := messagesToPrompt(msgs, tools, toolChoice)
+	p, _ := messagesToPrompt(msgs, tools, toolChoice, false)
 	return p
 }

@@ -55,7 +55,7 @@ CREATE INDEX IF NOT EXISTS idx_requests_ts ON requests(ts);
 CREATE INDEX IF NOT EXISTS idx_requests_proxy ON requests(proxy_id);
 CREATE INDEX IF NOT EXISTS idx_requests_model ON requests(model);
 
--- Hourly aggregate (永久保留，明细只留 30 天)
+-- Hourly aggregate (se conserva para siempre; el detalle solo 30 días)
 CREATE TABLE IF NOT EXISTS stats_hourly (
     bucket          INTEGER NOT NULL,    -- unix ts of hour start
     model           TEXT NOT NULL,
@@ -72,7 +72,7 @@ CREATE TABLE IF NOT EXISTS stats_hourly (
 );
 CREATE INDEX IF NOT EXISTS idx_hourly_bucket ON stats_hourly(bucket);
 
--- Daily aggregate (永久保留)
+-- Daily aggregate (se conserva para siempre)
 CREATE TABLE IF NOT EXISTS stats_daily (
     bucket          INTEGER NOT NULL,
     model           TEXT NOT NULL,
@@ -100,20 +100,20 @@ CREATE TABLE IF NOT EXISTS kv (
     v TEXT
 );
 
--- Cookie 池：每行一个 Google 登录态账号（一整串 gemini.google.com cookie）。
--- 请求时按 last_used_at 最久优先挑一个 enabled 的，天然轮转 + 分散单 IP 上限。
+-- Pool de cookies: una fila por cuenta con sesión de Google iniciada (una cadena completa de cookie de gemini.google.com).
+-- Al hacer una petición se elige una enabled dando prioridad a la de last_used_at más antiguo: rotación natural + reparto del límite de una sola IP.
 CREATE TABLE IF NOT EXISTS accounts (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    label         TEXT NOT NULL DEFAULT '',      -- 用户可命名（一般填邮箱）
-    cookie        TEXT NOT NULL,                 -- 完整 cookie 串 "k=v; k=v"
+    label         TEXT NOT NULL DEFAULT '',      -- el usuario puede nombrarlo (normalmente el correo)
+    cookie        TEXT NOT NULL,                 -- cadena de cookie completa "k=v; k=v"
     status        TEXT NOT NULL DEFAULT 'enabled', -- enabled | disabled
     note          TEXT NOT NULL DEFAULT '',
     created_at    INTEGER NOT NULL,
-    last_used_at  INTEGER NOT NULL DEFAULT 0,     -- 上次被挑中发请求的时刻
-    last_ok_at    INTEGER NOT NULL DEFAULT 0,     -- 上次请求成功的时刻
+    last_used_at  INTEGER NOT NULL DEFAULT 0,     -- momento en que se eligió por última vez para enviar una petición
+    last_ok_at    INTEGER NOT NULL DEFAULT 0,     -- momento del último éxito
     last_error    TEXT NOT NULL DEFAULT '',
-    fail_count    INTEGER NOT NULL DEFAULT 0,     -- 连续失败次数（成功归零）
-    proxy_id      INTEGER NOT NULL DEFAULT 0      -- 绑定的出口，0 = 还没绑
+    fail_count    INTEGER NOT NULL DEFAULT 0,     -- número de fallos consecutivos (vuelve a cero con un éxito)
+    proxy_id      INTEGER NOT NULL DEFAULT 0      -- salida vinculada; 0 = aún sin vincular
 );
 CREATE INDEX IF NOT EXISTS idx_accounts_pick ON accounts(status, last_used_at);
 `

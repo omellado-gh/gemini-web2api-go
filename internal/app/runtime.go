@@ -30,31 +30,35 @@ type RuntimeConfig struct {
 	LogRequests     bool   `json:"log_requests"`
 	Impersonate     string `json:"impersonate"`
 	GeminiBL        string `json:"gemini_bl"`
-	// ProxyCooldownMin 是代理连续失败熔断后隔多久放回池子，单位分钟。
-	// 0 = 不恢复（熔断即永久除名，要手动重置）。默认按实测的封禁恢复时长取 120。
+	// ProxyCooldownMin es cuánto tiempo, en minutos, se espera antes de devolver al pool un proxy tras cortarlo por fallos consecutivos.
+	// 0 = no se recupera (el corte lo elimina permanentemente y hay que reiniciarlo a mano). Por defecto se toma 120 según la duración de recuperación de bloqueo medida.
 	ProxyCooldownMin int `json:"proxy_cooldown_min"`
-	// FallbackDirect 决定代理池一个出口都用不上时是退回直连还是直接 429。
-	// 默认 false：配了代理池就意味着不想暴露本机 IP，悄悄直连会把这个前提废掉。
+	// FallbackDirect decide, cuando no se puede usar ninguna salida del pool de proxies, si se retrocede a Directo o se devuelve 429 directamente.
+	// Por defecto false: configurar un pool de proxies implica que no se quiere exponer la IP local; una conexión Directa silenciosa anularía esa premisa.
 	FallbackDirect bool `json:"fallback_direct"`
-	// FallbackAnon 决定 cookie 失效时是降级成匿名继续跑还是直接报错。
-	// 默认 false：匿名档拿不到 3.1 Pro / 扩展思考 / 生图，降级了客户端也看不出来。
+	// FallbackAnon decide, cuando caduca la cookie, si se degrada a anónimo y se sigue o se devuelve error directamente.
+	// Por defecto false: el modo anónimo no obtiene 3.1 Pro / pensamiento extendido / generación de imágenes, y el cliente no notaría la degradación.
 	FallbackAnon bool `json:"fallback_anon"`
-	// GeminiBLAuto 决定是否定期从 /app 页面抓最新的 bl 版本号覆盖上面钉死的值。
+	// GeminiBLAuto decide si se obtiene periódicamente de la página /app el último número de versión bl para sobrescribir el valor fijado arriba.
 	GeminiBLAuto bool `json:"gemini_bl_auto"`
-	// MaxPromptBytes 是单次请求 prompt 的 UTF-8 字节上限，超了直接报错。
-	// 单位是字节不是 token：实测上游的墙按字节走，跟语言无关，见 messages.go。
-	// 0 = 关掉检查（原样发出，由上游从尾部静默截断）。
+	// MaxPromptBytes es el límite superior en bytes UTF-8 del prompt de una sola petición; si se supera, devuelve error directamente.
+	// La unidad son bytes, no tokens: se comprobó que el muro del upstream va por bytes, con independencia del idioma; ver messages.go.
+	// 0 = desactiva la comprobación (se envía tal cual y el upstream lo trunca silenciosamente por el final).
 	MaxPromptBytes int `json:"max_prompt_bytes"`
-	// MultiTurn 开启后走 Gemini 原生 conversation_id 服务端多轮：按历史前缀识别续接，
-	// 命中就只发最新一句、历史留服务端，绕开单请求字节墙。匿名/登录都行，见 conversation.go。
-	// 默认 false（保持现有"每轮拼全量 prompt"行为）。实测多轮不放大上下文窗口，只让长
-	// 对话不撞单请求墙——对 Codex 这类长会话有用，对"喂长文档"没用。
+	// Con MultiTurn activado se usa la conversación nativa de servidor de Gemini vía conversation_id: se detecta la continuación por el prefijo del historial,
+	// y si coincide solo se envía la última frase, dejando el historial en el servidor, evitando el muro de bytes por petición. Vale para anónimo y con sesión iniciada; ver conversation.go.
+	// Por defecto false (mantiene el comportamiento actual de "recomponer el prompt completo en cada turno"). Se comprobó que el multirround no amplía la ventana de contexto, solo hace que las conversaciones
+	// largas no choquen con el muro por petición: sirve para conversaciones largas como las de Codex, no para "alimentar un documento largo".
 	MultiTurn bool `json:"multi_turn"`
-	// 出完结果自动删掉 gemini.google.com 上的这条会话（#19）。只登录态生效。默认 false。
+	// Al terminar el resultado, borra automáticamente esta conversación en gemini.google.com (#19). Solo surte efecto con sesión iniciada. Por defecto false.
 	AutoDeleteConversation bool `json:"auto_delete_conversation"`
-	// 匿名优先（#20）：不需要登录态能力的请求（纯文本、非思考、无工具、无图）走匿名、
-	// 不占 cookie 账号，省账号额度；需要登录才挑号。默认 false，见 modelNeedsLogin。
+	// Anónimo primero (#20): las peticiones que no necesitan capacidades con sesión iniciada (texto plano, sin pensamiento, sin herramientas, sin imagen) van por anónimo,
+	// sin ocupar una cuenta con cookie, ahorrando cuota de cuentas; solo se elige cuenta cuando hace falta iniciar sesión. Por defecto false; ver modelNeedsLogin.
 	AnonFirst bool `json:"anon_first"`
+	// Arranque forzado del bucle de herramientas: en el primer turno de una sesión con tools y con
+	// tool_choice auto/ausente, se eleva a "required" para que el modelo empiece a actuar en vez de
+	// responder en prosa. Opt-in; por defecto false.
+	ForceToolFirstTurn bool `json:"force_tool_first_turn"`
 }
 
 const runtimeConfigKey = "runtime_config"
@@ -89,6 +93,7 @@ func initRuntimeConfig() {
 
 		AutoDeleteConversation: cfg.AutoDeleteConversation,
 		AnonFirst:              cfg.AnonFirst,
+		ForceToolFirstTurn:     cfg.ForceToolFirstTurn,
 	}
 	if raw := kvGet(runtimeConfigKey); raw != "" {
 		saved := base

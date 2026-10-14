@@ -99,14 +99,39 @@ func convPut(key string, st *convState) {
 	}
 }
 
-// canonicalMessages 把消息列表压成 role+text 的稳定串，用来算会话指纹。
-// 只取 role 和文本内容 —— 客户端每轮重发同样的历史，压出来的串一致才能识别续接。
+// canonicalMessages serializa mensajes para generar una huella estable de sesión. Incluye
+// role, contenido textual, tool_call_id (en mensajes de rol "tool") y tool_calls (id, nombre y
+// argumentos) del assistant.
+//
+// Incluir las tool_calls es imprescindible en un bucle agéntico: dos ramas que parten del mismo
+// historial y solo se diferencian en qué herramienta llamaron (ambas con content "") daban la
+// misma huella, así que la continuación cruzaba sesiones y el modelo veía un historial ajeno.
+// Los reenvíos idénticos del cliente siguen dando la misma huella.
 func canonicalMessages(messages []map[string]interface{}) string {
 	var b strings.Builder
 	for _, m := range messages {
 		b.WriteString(getStr(m, "role"))
 		b.WriteByte(0x1f)
 		b.WriteString(contentToString(m["content"]))
+		if id := getStr(m, "tool_call_id"); id != "" {
+			b.WriteByte(0x1c)
+			b.WriteString(id)
+		}
+		if tcs, ok := m["tool_calls"].([]interface{}); ok {
+			for _, tc := range tcs {
+				tcm, ok := tc.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				fn, _ := tcm["function"].(map[string]interface{})
+				b.WriteByte(0x1d)
+				b.WriteString(getStr(tcm, "id"))
+				b.WriteByte(0x1d)
+				b.WriteString(getStr(fn, "name"))
+				b.WriteByte(0x1d)
+				b.WriteString(getStr(fn, "arguments"))
+			}
+		}
 		b.WriteByte(0x1e)
 	}
 	return b.String()
@@ -117,27 +142,57 @@ func hashStr(s string) string {
 	return hex.EncodeToString(h[:])
 }
 
-// convParentKey 是"这轮之前的历史"的指纹：除最后一条消息外的全部。
-// 命中 store 说明这是某路已知会话的延续，只要发最后一条新消息即可。
-func convParentKey(messages []map[string]interface{}) string {
-	if len(messages) < 2 {
-		return ""
+// convFind localiza la sesión de continuación correspondiente a este historial probando los
+// prefijos que terminan justo después de un mensaje del assistant, del más reciente al más
+// antiguo. Devuelve (estado, clave almacenada, índice del primer mensaje nuevo); (nil, "", -1)
+// si no hay coincidencia (sesión nueva). La clave se devuelve para poder invalidar la sesión si
+// falla la continuación.
+func convFind(messages []map[string]interface{}) (*convState, string, int) {
+	for i := len(messages) - 2; i >= 0; i-- {
+		if getStr(messages[i], "role") != "assistant" {
+			continue
+		}
+		key := hashStr(canonicalMessages(messages[:i+1]))
+		if st := convGet(key); st != nil {
+			return st, key, i + 1
+		}
 	}
-	return hashStr(canonicalMessages(messages[:len(messages)-1]))
+	return nil, "", -1
 }
 
-// convChildKey 是"这轮之后的历史"的指纹：历史 + 本轮模型回复。
-// 下一轮请求的 parentKey 会正好等于它（客户端把我们的回复原样带回来），从而续上。
-func convChildKey(messages []map[string]interface{}, responseText string) string {
-	full := append(append([]map[string]interface{}{}, messages...),
-		map[string]interface{}{"role": "assistant", "content": responseText})
+// convChildKey es la huella del historial tras este turno: el historial de entrada más el
+// mensaje del assistant que acabamos de producir (con sus tool_calls). El cliente reproducirá
+// ese mismo mensaje en la siguiente petición, así que el prefijo hasta el assistant coincidirá.
+func convChildKey(messages []map[string]interface{}, text string, calls []ToolCall) string {
+	full := append(append([]map[string]interface{}{}, messages...), assistantMsgWithCalls(text, calls))
 	return hashStr(canonicalMessages(full))
+}
+
+// assistantMsgWithCalls construye el mensaje del assistant en la forma que lo reenviará el
+// cliente (OpenAI), para poder huellarlo idéntico.
+func assistantMsgWithCalls(text string, calls []ToolCall) map[string]interface{} {
+	m := map[string]interface{}{"role": "assistant", "content": text}
+	if len(calls) > 0 {
+		tcs := make([]interface{}, 0, len(calls))
+		for _, c := range calls {
+			tcs = append(tcs, map[string]interface{}{
+				"id":   c.ID,
+				"type": "function",
+				"function": map[string]interface{}{
+					"name":      c.Function.Name,
+					"arguments": c.Function.Arguments,
+				},
+			})
+		}
+		m["tool_calls"] = tcs
+	}
+	return m
 }
 
 var rcidRe = regexp.MustCompile(`"(rc_[A-Za-z0-9_-]{6,})"`)
 
-// parseConvIDs 从 StreamGenerate 响应里取续接要用的四样：cid=[1][0]、rid=[1][1]、
-// tok26=帧[26]、rcid=正文里的 rc_xxx（登录态续接第 3 位要用它，匿名为空）。
+// parseConvIDs extrae cid=[1][0], rid=[1][1], tok26=trama[26], rcid=rc_xxx del cuerpo (necesarios para reanudar).
+// rcid solo se usa en posición 3 al reanudar con login; vacío en anónimo.
 func parseConvIDs(raw string) (cid, rid, rcid, tok26 string) {
 	for _, line := range strings.Split(raw, "\n") {
 		line = strings.TrimSpace(line)
@@ -232,20 +287,26 @@ func getAnonSession(proxyURL string) (string, error) {
 		pairs = append(pairs, strings.TrimSpace(nv))
 	}
 	if len(pairs) == 0 {
-		return "", fmt.Errorf("匿名 /app 没返回 Set-Cookie")
+		return "", fmt.Errorf("la /app anónima no devolvió Set-Cookie")
 	}
 	return strings.Join(pairs, "; "), nil
 }
 
-// webUA 是匿名 GET /app 的 User-Agent（tls-client 路径要手动带）。
+// webUA es el User-Agent para GET anónimo a /app (necesario con ruta tls-client).
 const webUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
 	"(KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
 
-// streamGenerateConv 发一路会话的一轮。turn==0 是首轮（建会话），>0 是续接（只发新消息）。
-// 整条会话绑定 conv.cookie / conv.proxyID，中途不换号不换出口。成功后回填 conv 的
-// cid/rid/rcid/tok26 和 turn+1，供下一轮续接。
+// streamGenerateConv envía un turno de sesión: turn==0 crea sesión (envía todo), >0 reanuda (solo nuevo mensaje).
+// Sesión ligada a conv.cookie/conv.proxyID (no cambia cuenta/egreso). Tras éxito se actualiza cid/rid/rcid/tok26 y turn++.
+// para siguiente reanudación.
 func streamGenerateConv(prompt string, mc ModelConfig, conv *convState,
 	onDelta, onReasoning func(string)) (*StreamResult, error) {
+	// Guarda de presupuesto: la vía nativa no convierte el prompt en adjunto, así que un prompt
+	// demasiado largo se truncaría en silencio en el upstream (perdería el final). Se rechaza
+	// explícitamente igual que en la ruta de un solo turno.
+	if b := rtCfg().MaxPromptBytes; b > 0 && len(prompt) > b {
+		return &StreamResult{}, &PromptTooLongError{Bytes: len(prompt), Budget: b, HasCookie: conv.cookie != "" || conv.isLogin}
+	}
 	p, slotOK, slotErr := acquireSlot(conv.proxyID)
 	if !slotOK {
 		return &StreamResult{}, slotErr
@@ -422,25 +483,29 @@ func streamGenerateConv(prompt string, mc ModelConfig, conv *convState,
 	return &StreamResult{ProxyID: p.ID, ProxyName: p.Name, AccountID: conv.accountID}, lastErr
 }
 
-// callGeminiConv 是多轮开启时的入口：按历史前缀识别续接。
-//   - 命中已知会话 → 只发最后一条新消息（user 或 tool 结果），历史留服务端（绕开字节墙）。
-//   - 没命中 → 新建会话，首轮发全量拼接的历史（含 tools 指令，把当前上下文交给服务端）。
+// callGeminiConv es el punto de entrada cuando se usa la conversación nativa de servidor
+// (multironda): identifica la continuación por el historial.
+//   - Coincide con una sesión conocida → solo envía los mensajes nuevos (el último turno de
+//     usuario, o los resultados de herramienta); el historial queda en el servidor (evita el
+//     muro de bytes y evita reenviar en cada vuelta del bucle agéntico).
+//   - No coincide → crea una sesión nueva y en el primer turno envía el historial completo
+//     concatenado (con las instrucciones de tools).
 //
-// 支持 tools（续接里也解析 ```tool_call``` 围栏）；图片走原单轮路径（callGemini）。
+// Soporta tools (en la continuación también se parsean los fences ```tool_call```); las imágenes
+// van por la ruta original de un solo turno (callGemini).
 func callGeminiConv(messages []map[string]interface{}, mc ModelConfig,
-	tools []map[string]interface{}, toolChoice interface{},
+	tools []map[string]interface{}, toolChoice interface{}, parallel bool,
 	onDelta, onReasoning func(string)) (string, []ToolCall, *StreamResult, error) {
-	parentKey := convParentKey(messages)
-	conv := convGet(parentKey)
+	conv, convKey, newFrom := convFind(messages)
 	fresh := conv == nil
 
 	var prompt string
 	if fresh {
 		conv = &convState{}
-		// 有 cookie 池就用登录号（能力更全），否则匿名（首轮就地拿 session cookie）。
-		// #20 匿名优先：模型不需要登录态时不占号（多轮已被 gate 限成无图无工具，附件
-		// 恒无，所以第二个参数传 false）。必须在调用前短路：pickCookieAccount 会更新
-		// last_used_at，调了不用等于白占一轮。
+		// Si hay pool de cookies se usa una cuenta con login (capacidades más completas); si no, anónimo (en el primer turno se obtiene una session cookie in situ).
+		// #20 anónimo primero: no se ocupa cuenta cuando el modelo no necesita login. Hay que
+		// cortocircuitar antes de la llamada: pickCookieAccount actualiza last_used_at, y
+		// llamarlo sin usarlo equivale a ocupar un turno en vano.
 		if !anonFirstEligible(mc, false) {
 			if a, ok := pickCookieAccount(); ok {
 				conv.cookie = a.Cookie
@@ -450,49 +515,100 @@ func callGeminiConv(messages []map[string]interface{}, mc ModelConfig,
 				conv.proxyID = a.ProxyID
 			}
 		}
-		// 首轮带上 tools 指令：模型要靠它知道怎么吐 tool_call 围栏，续接轮不再重发
-		//（指令已在服务端首轮历史里）。
-		prompt, _ = messagesToPrompt(messages, tools, toolChoice)
+		// En el primer turno se incluyen las instrucciones de tools: el modelo las necesita para saber cómo emitir los fences tool_call; en los turnos de continuación no se reenvían
+		// (las instrucciones ya están en el historial del primer turno en el servidor).
+		var latest string
+		prompt, latest = messagesToPrompt(messages, tools, toolChoice, parallel)
+		// Un prompt inicial que supera el presupuesto se maneja mejor por la ruta de un solo
+		// turno, que puede convertirlo en adjunto de texto con cookie. Enviarlo por la sesión
+		// nativa lo truncaría en silencio en el upstream (se perdería justo el final). La
+		// continuación nunca llega aquí porque solo envía los mensajes nuevos.
+		if b := rtCfg().MaxPromptBytes; b > 0 && len(prompt) > b {
+			logf("[conv] prompt inicial %d bytes > presupuesto %d; se degrada a la ruta de un solo turno", len(prompt), b)
+			return callGemini(prompt, latest, mc, tools, toolChoice, nil, onDelta, onReasoning)
+		}
 	} else {
-		prompt = formatNewTurn(messages[len(messages)-1])
+		// Continuación: se envían solo los mensajes nuevos (puede haber varios: un assistturn de
+		// tool_calls seguido de N resultados de herramienta, o simplemente un mensaje de usuario).
+		// Los resultados de herramienta se formatean con la misma señal limpia que el primer turno
+		// (formatToolResult) y resolviendo el nombre por tool_call_id cuando el cliente no lo repite.
+		prompt = formatNewMessages(messages[newFrom:], toolCallNames(messages))
+		if len(tools) > 0 {
+			// Re-anclar el formato de herramientas en cada continuación: el modelo se desvía
+			// si no lo vuelve a ver, aunque las definiciones sigan en el historial del servidor.
+			prompt += "\n\n" + toolTurnReminder
+		}
 	}
 	if fresh {
-		logf("[conv] 新会话，首轮发 %d 字节（tools=%d）", len(prompt), len(tools))
+		logf("[conv] sesión nueva, primer turno envía %d bytes (tools=%d)", len(prompt), len(tools))
 	} else {
-		logf("[conv] 续接命中 turn=%d，只发 %d 字节（历史留服务端）", conv.turn, len(prompt))
+		logf("[conv] continuación acertada turn=%d, %d mensajes nuevos, %d bytes (historial queda en el servidor)",
+			conv.turn, len(messages)-newFrom, len(prompt))
 	}
 
 	res, err := streamGenerateConv(prompt, mc, conv, onDelta, onReasoning)
 	if err != nil {
 		if !fresh {
-			// 续接失败：这路会话作废，客户端重试时会当新会话全量重发。
-			convDelete(parentKey)
+			// Fallo de continuación: esta sesión queda invalidada; cuando el cliente reintente se tratará como sesión nueva y se reenviará todo.
+			convDelete(convKey)
 		}
 		return "", nil, res, err
 	}
 	text := extractResponseText(res.Raw)
 	var toolCalls []ToolCall
 	if len(tools) > 0 {
-		text, toolCalls = parseToolCalls(text)
+		text, toolCalls = parseToolCalls(text, toolNameSet(tools))
 	}
 	if text == "" && len(toolCalls) == 0 {
 		if !fresh {
-			convDelete(parentKey)
+			convDelete(convKey)
 		}
 		return "", nil, res, fmt.Errorf("upstream returned no content frame (raw %d bytes)", len(res.Raw))
 	}
-	// 存续接状态：客户端下一轮把这段回复原样带回来时，parentKey 会命中这里。
-	// 存的是解析掉围栏后的正文 —— 客户端把 assistant 消息带回来时 content 也是这段。
-	convPut(convChildKey(messages, text), conv)
+	// Guardar el estado de continuación: cuando el cliente devuelva este turno tal cual en la
+	// siguiente petición, el prefijo hasta este assistant coincidirá.
+	convPut(convChildKey(messages, text, toolCalls), conv)
 	return text, toolCalls, res, nil
 }
 
-// formatNewTurn 把续接要发的那条新消息格式化，跟 messagesToPrompt 里各角色的写法对齐，
-// 好让服务端历史里的模型认得出这是工具结果还是用户新话。
-func formatNewTurn(msg map[string]interface{}) string {
-	content := contentToString(msg["content"])
-	if getStr(msg, "role") == "tool" {
-		return fmt.Sprintf("[Tool result for %s]: %s", getStr(msg, "name"), content)
+// shouldUseConv decide si una petición va por la conversación nativa de servidor (multironda).
+// No aplica a modelos multimedia ni a peticiones con imágenes (esos necesitan adjuntos).
+//   - Con MultiTurn activado, siempre que no haya imágenes.
+//   - Activación consciente: aunque MultiTurn esté apagado, en una sesión con herramientas y con
+//     cuenta con cookie se usa la continuación server-side, para no reenviar todo el historial en
+//     cada vuelta del bucle agéntico (menos presión sobre el muro de bytes, menos repetición de
+//     trabajo). Si el cliente no reproduce el historial de forma idéntica, la huella no coincide
+//     y cae a sesión nueva (comportamiento de un solo turno), así que no hay regresión.
+func shouldUseConv(mc ModelConfig, hasImages, hasTools bool) bool {
+	if mc.Tool != 0 || hasImages {
+		return false
 	}
-	return content
+	return rtCfg().MultiTurn || (hasTools && hasCookie())
+}
+
+// formatNewMessages formatea los mensajes nuevos de una continuación, alineado con cómo
+// messagesToPrompt escribe cada rol, para que el modelo del historial del servidor reconozca si
+// es un resultado de herramienta (con la señal limpia de éxito/fallo) o un mensaje nuevo del usuario.
+// Acepta varios mensajes porque un turno de herramienta en paralelo llega como un assistant de
+// tool_calls seguido de N resultados.
+func formatNewMessages(msgs []map[string]interface{}, callNames map[string]string) string {
+	var parts []string
+	for _, m := range msgs {
+		content := contentToString(m["content"])
+		switch getStr(m, "role") {
+		case "tool":
+			name := getStr(m, "name")
+			if name == "" {
+				name = callNames[getStr(m, "tool_call_id")]
+			}
+			parts = append(parts, formatToolResult(name, content))
+		case "assistant":
+			parts = append(parts, "[Assistant]: "+content)
+		default:
+			if content != "" {
+				parts = append(parts, content)
+			}
+		}
+	}
+	return strings.Join(parts, "\n\n")
 }
