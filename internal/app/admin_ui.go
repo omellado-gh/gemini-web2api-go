@@ -15,13 +15,16 @@ func handleAdminUI(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "embed error", 500)
 		return
 	}
-	// 面板里的地址全是相对的，好让它在反代的子路径下（example.com/gemini/admin）
-	// 也能用。相对地址是按**文档 URL 的目录**解析的，所以 /admin 和 /admin/ 会解析
-	// 出不同结果 —— 前者的目录是上一层。统一重定向到带斜杠那个形式。
+	// Las direcciones del panel son todas relativas, para que funcione también bajo
+	// una subruta detrás de un reverse proxy (example.com/gemini/admin). Las direcciones
+	// relativas se resuelven según el **directorio de la URL del documento**, así que /admin
+	// y /admin/ producen resultados distintos —— el directorio del primero es el nivel superior.
+	// Se redirige de forma uniforme a la forma con barra final.
 	//
-	// Location 必须是相对值：写成 "/admin/" 的话，反代下浏览器会跳到站点根的
-	// /admin/，前缀 /gemini 就丢了。这里不用 http.Redirect —— 它会把相对目标
-	// 按请求路径展开成绝对路径，正好毁掉这一点。
+	// Location debe ser un valor relativo: si se escribe "/admin/", tras el reverse proxy el
+	// navegador saltaría a /admin/ en la raíz del sitio y se perdería el prefijo /gemini. Aquí
+	// no se usa http.Redirect —— este expande el destino relativo a una ruta absoluta según la
+	// ruta de la petición, justo lo que arruinaría esto.
 	path := r.URL.Path
 	if path == "/admin" {
 		w.Header().Set("Location", "admin/")

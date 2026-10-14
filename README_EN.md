@@ -11,7 +11,7 @@
 [![Go Version](https://img.shields.io/badge/go-1.21%2B-00ADD8.svg)](https://golang.org)
 [![Docker](https://img.shields.io/badge/docker-distroless-blue)](Dockerfile)
 
-[中文文档](README.md) | English
+[Spanish documentation](README.md) | English
 
 Turn the Google Gemini web app into an OpenAI-compatible API. **Single binary**, **no account needed** (anonymous works), **real Chrome 146 fingerprint**, **SQLite persistence**, ships with an **admin dashboard**.
 
@@ -134,7 +134,7 @@ gemini-web2api-go v4.0.0
   Proxy:       none
   Impersonate: chrome_146
   Tokenizer:   tiktoken cl100k_base
-  Per-IP 限流: 并发=5 / RPM=30 / RPH=80
+  Per-IP rate limit: concurrency=5 / RPM=30 / RPH=80
   Retry:       3x / 2s
 ```
 
@@ -331,6 +331,7 @@ Saving takes effect **immediately**, no restart. Values live in the database and
 | Multi-turn (`multi_turn`) | off by default. When on, uses Gemini's native conversation_id server-side continuation — the client resends full history each turn, the server detects the continuation and sends only the newest message while history stays server-side, so long conversations no longer hit the single-request byte wall. Works signed-in or anonymous. **Note**: it does not enlarge the model's context window; content past the window is still evicted (recent-kept sliding window). It solves "long chat without hitting the wall + keep recent context", not "feed a huge document". |
 | Auto-delete conversation (`auto_delete_conversation`) | off by default. When on, each finished request deletes the conversation it left on gemini.google.com, so signed-in accounts don't pile them up. Signed-in only; async best-effort, a failed delete doesn't affect the response. |
 | Anonymous-first (`anon_first`) | off by default. When on, requests that don't need a signed-in session (plain text, no thinking, no tool, no image) go out anonymously without consuming a cookie account, saving account quota; only 3.1 Pro / 3.8 Flash / extended thinking / image gen / file upload etc. pick an account. When off, any request uses an account as long as the pool has one. |
+| Force tools on the first turn (`force_tool_first_turn`) | off by default. When on, on the first turn of a tool-enabled session with `tool_choice` auto/absent, the proxy raises it to required so the model starts acting (listing/reading) instead of answering in prose. Useful with agentic clients and weak models; it may force a call even when the message doesn't need one. |
 | Retry attempts / retry delay / upstream timeout | |
 | Detail retention days | only request details expire; aggregates are kept forever |
 | TLS fingerprint | `chrome_146` (default) / `chrome_144` / `chrome_133` / `firefox_147` / `safari_16_0` / `safari_ios_17_0` |
@@ -487,8 +488,8 @@ This does not change the blocking threshold, though: in a same-start comparison,
 | `GET /` | ✅ | Health check, unauthenticated, returns status/version/models |
 | `/v1beta/models/…` (Gemini CLI native) | ❌ | Not implemented, only OpenAI-shaped endpoints are exposed |
 | `/v1/embeddings`, `/v1/images/*`, `/v1/audio/*` | ❌ | Not implemented, return 404 |
-| Function calling | ⚠️ | Prompt-level implementation (the model emits a ` ```tool_call``` ` block that we parse with a regex), not a real protocol layer. **Reliable for looking up private data or internal systems**, but anything Gemini can answer itself (the weather) gets answered directly, and side-effecting actions (sending email) are refused. **Agentic clients (Codex, etc.) now work**: before 4.11.0 their tens-of-KB system prompts buried our tool instructions and caused off-topic replies; fixed now. Since 4.12.0 tool results are condensed into a clear success/failure signal, so weak models no longer misread a no-output success as a failure and loop retrying (measured: the same task dropped from 26 loops to 2-4 before it concludes) |
-| `tool_choice` | ⚠️ | `none` injects no tool definitions at all; `required` and a named function add mandatory wording and drop the other tools from the prompt. A prompt-level layer **cannot truly force it** — in testing, questions the model can answer itself (weather, 2+2) were answered directly even under `required` |
+| Function calling | ✅ | Implemented at the **prompt level** (the web frontend exposes no protocol layer for it): the model emits ` ```tool_call``` ` blocks that we parse tolerantly (loose JSON, aliases, `arguments` as object or string; an unparseable block is returned as text instead of being lost). Each call is emitted **while streaming, as soon as its block closes**; arguments are validated against the tool's `parameters`; `parallel_tool_calls` allows several calls per turn. **Reliable for looking up private data or internal systems**; anything Gemini can answer itself (the weather) is answered directly, and side-effecting actions (sending email) are refused. Agentic clients (Codex, opencode, Cursor) work. Limits: not a real protocol layer, the model doesn't always get the format right, and there is a ~130 KB per-request cap |
+| `tool_choice` | ⚠️ | `none` injects no tool definitions; `required`/a named function add mandatory wording. A prompt-level layer cannot truly force it; to get closer, if there is no valid call we do **a single retry** with a reinforced reminder (non-streaming requests only: once bytes are sent they can't be retracted) |
 | `stream_options.include_usage` | ✅ | Emits a usage chunk with an empty `choices` array after `finish_reason` |
 | `usage` token counts | ✅ | tiktoken cl100k_base, the same basis as the panel's requests table |
 | `n` > 1 | ❌ | Returns 400. Upstream yields a single candidate; silently treating it as 1 would short-change the client |
@@ -537,7 +538,7 @@ docker-compose.yml         single container, pulls the ghcr image by default, sq
 
 - **Per-IP ceiling**: when sending in bursts, measured at **80-180 requests** before the sorry-page redirect (connection reuse buys about 60%: at concurrency 10, a reused pool reached 172/177 versus 106/109 for a fresh connection per request). But **a steady pace barely reaches the ceiling at all** — 10 requests/minute on a static IP ran 800 requests without a block. `per_ip_rph=80` sits at the bottom of the burst range → use the proxy pool to scale, or pace yourself and raise the limit
 - **Signed-in features**: image generation (`gemini-image`), music (`gemini-music`), canvas (`gemini-canvas`) and video generation (`gemini-video`, Pro accounts only — free accounts are refused by the content policy) are implemented; deep research is not (a multi-step async flow)
-- **Function calling**: prompt-level, the model doesn't always answer in the expected format (a real protocol layer isn't available to us)
+- **Function calling**: prompt-level (a real protocol layer isn't available to us); tolerant of loose formats, but the model doesn't always get the format right
 - **Multimodal**: image/video input needs a cookie. Image, music, canvas and video generation work with a cookie; video generation additionally needs a Pro/paid account
 - **Long context hits two walls**: ~130,000 bytes for the request body and ~160,000 bytes for attachments (the latter is the **total** amount of content the model can see — splitting it across several attachments does not raise the budget). A cookie only takes the usable length from 130K to ~160K; genuinely long conversations still have to be compacted by the client
 - **Token counts**: tiktoken estimates (Gemini's real tokenizer is not public), within about ±20% of the true value
@@ -613,6 +614,27 @@ You can connect them (it is OpenAI-compatible), and plain chat and coding work f
 request at roughly **130,000 bytes** (about 160,000 with a cookie); agent tools that push tens of kilobytes of system
 prompt and history per request will get off-topic answers and look "dumb" — a limit of the web model itself, not of
 the proxy. Function calling is prompt-level, so the model does not always answer in the expected format.
+
+Configuring opencode as an agentic client (`~/.config/opencode/opencode.json`):
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "gemini-proxy": {
+      "npm": "@ai-sdk/openai-compatible",
+      "options": { "baseURL": "http://localhost:8083/v1", "apiKey": "sk-…" },
+      "models": { "gemini-3.1-pro": { "name": "Gemini 3.1 Pro", "tool_call": true } }
+    }
+  },
+  "model": "gemini-proxy/gemini-3.1-pro"
+}
+```
+
+`tool_call: true` makes opencode send the `tools` array; the proxy injects the tool instructions
+on its own, so you do **not** need to add your own tool prompt.
+
+**Reading and writing files**: the I/O is done by opencode (tools `read`/`write`/`edit`/`glob`/`grep`); the proxy only carries their `tool_calls`. The proxy tolerates the loose JSON models usually emit when writing (raw line breaks, unescaped quotes) and always re-emits `arguments` as valid JSON. Note: a single write is capped by the web frontend's output length, so for large files use `write` and then several `edit`s.
 
 ### Is gemini-3.8-flash available?
 

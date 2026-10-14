@@ -5,8 +5,9 @@ import (
 	"testing"
 )
 
-// feed 按给定的切法把整段文本喂进闸门，返回实际发给客户端的内容。
-// 切法要能任意变化：上游帧边界落在哪儿完全不由我们决定，闸门的结果不能因此不同。
+// feed alimenta todo el texto a la compuerta con el troceado dado y devuelve lo que realmente se envió al cliente.
+// El troceado debe poder variar libremente: dónde caen los límites de trama del upstream no lo decidimos
+// nosotros en absoluto, y el resultado de la compuerta no puede cambiar por ello.
 func feed(t *testing.T, chunks []string) string {
 	t.Helper()
 	var got strings.Builder
@@ -15,12 +16,12 @@ func feed(t *testing.T, chunks []string) string {
 		g.Push(c)
 	}
 	if got.String() != g.Sent() {
-		t.Fatalf("Sent() 和实际发出的对不上: %q vs %q", g.Sent(), got.String())
+		t.Fatalf("Sent() no coincide con lo realmente enviado: %q vs %q", g.Sent(), got.String())
 	}
 	return got.String()
 }
 
-// 逐字节喂是最狠的切法：每个字符都是一个新帧，半截围栏必然出现在帧边界上。
+// Alimentar byte a byte es el troceado más duro: cada carácter es una trama nueva, y una valla a medias aparecerá forzosamente en el límite de trama.
 func chars(s string) []string {
 	var out []string
 	for _, r := range s {
@@ -52,7 +53,7 @@ func TestToolFenceGate(t *testing.T) {
 			"a\n\nb\n\nc",
 		},
 		{
-			// 普通代码块不是 tool_call，不能扣住
+			// un bloque de código normal no es tool_call y no debe retenerse
 			"普通代码块照常发",
 			"看这段：\n```python\nprint(1)\n```\n就这样。",
 			"看这段：\n```python\nprint(1)\n```\n就这样。",
@@ -61,19 +62,19 @@ func TestToolFenceGate(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			// 三种切法结果必须一致
+			// los tres troceados deben dar el mismo resultado
 			if got := feed(t, []string{c.full}); got != c.want {
-				t.Errorf("整段喂: 得到 %q，期望 %q", got, c.want)
+				t.Errorf("alimentado completo: se obtuvo %q, se esperaba %q", got, c.want)
 			}
 			if got := feed(t, chars(c.full)); got != c.want {
-				t.Errorf("逐字符喂: 得到 %q，期望 %q", got, c.want)
+				t.Errorf("alimentado carácter a carácter: se obtuvo %q, se esperaba %q", got, c.want)
 			}
 			mid := len(c.full) / 2
 			for mid < len(c.full) && !isRuneStart(c.full[mid]) {
 				mid++
 			}
 			if got := feed(t, []string{c.full[:mid], c.full[mid:]}); got != c.want {
-				t.Errorf("对半喂: 得到 %q，期望 %q", got, c.want)
+				t.Errorf("alimentado por mitades: se obtuvo %q, se esperaba %q", got, c.want)
 			}
 		})
 	}
@@ -81,8 +82,8 @@ func TestToolFenceGate(t *testing.T) {
 
 func isRuneStart(b byte) bool { return b&0xC0 != 0x80 }
 
-// 闸门发出去的内容 + parseToolCalls 的最终文本，必须能拼回同一份正文 ——
-// 这是流式和非流式结果一致的判据。
+// Lo enviado por la compuerta + el texto final de parseToolCalls deben reconstruir el mismo cuerpo;
+// este es el criterio de que el resultado en streaming y sin streaming coinciden.
 func TestToolFenceGateMatchesParse(t *testing.T) {
 	full := "让我查一下。\n```tool_call\n{\"name\": \"get_weather\", \"arguments\": {\"city\": \"London\"}}\n```\n查完了。"
 
@@ -90,28 +91,28 @@ func TestToolFenceGateMatchesParse(t *testing.T) {
 	final, calls := parseToolCalls(full)
 
 	if len(calls) != 1 || calls[0].Function.Name != "get_weather" {
-		t.Fatalf("工具调用没解析出来: %+v", calls)
+		t.Fatalf("no se parseó la llamada a herramienta: %+v", calls)
 	}
-	// 流式发出的可能比最终文本多首尾空白（parseToolCalls 收尾会 TrimSpace）。
+	// lo emitido en streaming puede tener espacios sobrantes al inicio/fin respecto al texto final (parseToolCalls hace TrimSpace al cerrar).
 	if strings.TrimSpace(streamed) != final {
-		t.Errorf("流式发出 %q，最终文本 %q", strings.TrimSpace(streamed), final)
+		t.Errorf("streaming emitió %q, texto final %q", strings.TrimSpace(streamed), final)
 	}
 }
 
-// 未闭合的围栏：闸门扣住不发，收尾时由 remainingOf 补回去，客户端不会丢内容。
+// Valla sin cerrar: la compuerta la retiene sin emitir; al cerrar, remainingOf la repone, el cliente no pierde contenido.
 func TestToolFenceGateUnclosed(t *testing.T) {
 	full := "开始了。\n```tool_call\n{\"name\": \"f\""
 	streamed := feed(t, chars(full))
 	if streamed != "开始了。\n" {
-		t.Fatalf("扣住的部分不对: %q", streamed)
+		t.Fatalf("la parte retenida es incorrecta: %q", streamed)
 	}
-	// parseToolCalls 对未闭合围栏不做处理，原样留在文本里
+	// parseToolCalls no procesa la valla sin cerrar y la deja tal cual en el texto
 	final, calls := parseToolCalls(full)
 	if len(calls) != 0 {
-		t.Fatalf("未闭合围栏不该解析出工具调用: %+v", calls)
+		t.Fatalf("una valla sin cerrar no debería parsear llamadas a herramientas: %+v", calls)
 	}
 	if rest := remainingOf(final, streamed); rest == "" {
-		t.Error("收尾补发算出来是空的，扣住的内容会丢")
+		t.Error("el reenvío al cerrar sale vacío; el contenido retenido se perdería")
 	}
 }
 

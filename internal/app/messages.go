@@ -80,7 +80,7 @@ func buildPrompt(messages []map[string]interface{}, tools []map[string]interface
 			}
 			name := getStr(fn, "name")
 			if forced != "" && name != forced {
-				continue // 指定了函数名，其余不进 prompt
+				continue // se especificó un nombre de función; las demás no entran al prompt
 			}
 			defs = append(defs, map[string]interface{}{
 				"name":        name,
@@ -449,8 +449,9 @@ func (e *PromptTooLongError) Error() string {
 			"unrelated answer, so this request is rejected instead.",
 		e.Bytes, e.Budget)
 	if !e.HasCookie {
-		// 没 cookie 时这不是死路：导一个进来就能走附件，长度限制基本就没了。
-		// 不说这句的话用户只会以为"这项目撑不住长上下文"。
+		// Sin cookie esto no es un callejón sin salida: importando una se puede usar el
+		// adjunto y el límite de longitud prácticamente desaparece. Sin esta frase, el
+		// usuario solo pensará que «este proyecto no aguanta contextos largos».
 		return base + " Add a Google account cookie in the admin panel (Cookie pool) — " +
 			"with one configured, oversized conversations are uploaded as a text " +
 			"attachment instead and this limit largely goes away."

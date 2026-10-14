@@ -11,11 +11,11 @@ import (
 	"time"
 )
 
-// CookieAccount 是 cookie 池里的一行：一个 Google 登录态账号。
+// CookieAccount es una fila del pool de cookies: una cuenta de sesión de Google.
 type CookieAccount struct {
 	ID         int64  `json:"id"`
 	Label      string `json:"label"`
-	Cookie     string `json:"cookie"` // 完整串，API 层按需脱敏后再返回
+	Cookie     string `json:"cookie"` // cadena completa; la capa API la enmascara antes de devolverla
 	Status     string `json:"status"`
 	Note       string `json:"note"`
 	CreatedAt  int64  `json:"created_at"`
@@ -23,16 +23,18 @@ type CookieAccount struct {
 	LastOkAt   int64  `json:"last_ok_at"`
 	LastError  string `json:"last_error"`
 	FailCount  int64  `json:"fail_count"`
-	ProxyID    int64  `json:"proxy_id"` // 绑定的出口，0 = 还没绑
+	ProxyID    int64  `json:"proxy_id"` // salida vinculada; 0 = aún sin vincular
 }
 
-// splitCookiePairs 把 "k=v; k=v" 拆成键值对。
+// splitCookiePairs divide "k=v; k=v" en pares clave-valor.
 //
-// 按 ";" 切再逐段 TrimSpace，不按 "; " 切：从 DevTools 复制出来的串不一定带空格，
-// 而按 "; " 切的话 "SID=a;SAPISID=b" 会整段当成一个键 —— 于是 extractSAPISID
-// 取不到值、不发 Authorization 头、请求被上游当匿名处理，用户毫不知情。
+// Se corta por ";" y luego se hace TrimSpace a cada segmento, no se corta por "; ":
+// las cadenas copiadas de DevTools no siempre llevan espacios, y al cortar por "; "
+// "SID=a;SAPISID=b" quedaría como una sola clave — así extractSAPISID no obtiene
+// valor, no se envía la cabecera Authorization y el upstream trata la petición como
+// anónima, sin que el usuario lo sepa.
 //
-// 值里可能含 "="（base64 补位），所以只在第一个等号处切。
+// El valor puede contener "=" (relleno base64), así que solo se corta en el primer igual.
 func splitCookiePairs(cookie string) [][2]string {
 	var out [][2]string
 	for _, p := range strings.Split(cookie, ";") {
@@ -44,7 +46,7 @@ func splitCookiePairs(cookie string) [][2]string {
 	return out
 }
 
-// cookieValue 从一整串 cookie 里取指定名字的值，取不到返回空串。
+// cookieValue obtiene el valor del nombre indicado dentro de una cadena de cookie; si no lo encuentra, devuelve cadena vacía.
 func cookieValue(cookie, name string) string {
 	for _, kv := range splitCookiePairs(cookie) {
 		if kv[0] == name {
@@ -54,13 +56,15 @@ func cookieValue(cookie, name string) string {
 	return ""
 }
 
-// extractSAPISID 从一整串 cookie 里取 SAPISID 的值，取不到返回空串。
+// extractSAPISID obtiene el valor de SAPISID de una cadena de cookie; si no lo encuentra, devuelve cadena vacía.
 func extractSAPISID(cookie string) string {
 	return cookieValue(cookie, "SAPISID")
 }
 
-// cookieSubset 只留下指定名字的项，顺序跟原串一致。刷新 1PSIDTS 时不能把整串
-// 都带上：多带 Chrome DBSC / 其它主机的 cookie 实测会让 RotateCookies 回 401。
+// cookieSubset deja solo las entradas con los nombres indicados, conservando el orden
+// del string original. Al refrescar 1PSIDTS no se puede arrastrar el string completo:
+// en pruebas, arrastrar el DBSC de Chrome y cookies de otros hosts hace que
+// RotateCookies devuelva 401.
 func cookieSubset(cookie string, names []string) string {
 	want := make(map[string]bool, len(names))
 	for _, n := range names {
@@ -78,7 +82,7 @@ func cookieSubset(cookie string, names []string) string {
 	return strings.Join(parts, "; ")
 }
 
-// cookieNames 返回 cookie 串里出现的所有 cookie 名（顺序保留），供 UI 展示。
+// cookieNames devuelve todos los nombres de cookie que aparecen en el string (conservando el orden), para mostrarlos en la UI.
 func cookieNames(cookie string) []string {
 	var names []string
 	for _, kv := range splitCookiePairs(cookie) {
@@ -87,37 +91,42 @@ func cookieNames(cookie string) []string {
 	return names
 }
 
-// accountAdd 往池里插一条。cookie 必须能取到非空的 SAPISID。
-// 这是面板/API 手工添加走的路，用户当场看得到错误提示，拦下来是对的。
+// accountAdd inserta una fila en el pool. La cookie debe permitir obtener un SAPISID no vacío.
+// Este es el camino de la adición manual desde el panel/API: el usuario ve el error en el
+// momento, así que rechazarla es lo correcto.
 //
-// 判据是**取不取得到值**，不是"字符串里出没出现过 SAPISID"：后者会把
-// 一份没填的逐项模板（键名在、值全空）放进池子，存成一整段 JSON，
-// 之后每次轮到它都注定失败。
+// El criterio es **si se puede obtener el valor**, no "si la cadena contiene SAPISID":
+// esto último metería en el pool una plantilla por ítems sin rellenar (nombres de clave
+// presentes, valores vacíos), guardada como un bloque JSON entero, y cada vez que le tocara
+// el turno fallaría sin remedio.
 func accountAdd(label, cookie, note string) (int64, error) {
-	c, ok := normalizeCookie(cookie, "手工添加的 cookie")
+	c, ok := normalizeCookie(cookie, "cookie añadida a mano")
 	if !ok {
-		return 0, fmt.Errorf("cookie 解析失败：既不是 \"k=v; k=v\" 串，也不是可识别的 JSON")
+		return 0, fmt.Errorf("fallo al analizar la cookie: no es una cadena \"k=v; k=v\" ni un JSON reconocible")
 	}
 	if extractSAPISID(c) == "" {
-		return 0, fmt.Errorf("cookie 里没有 SAPISID，多半没复制全（需要 gemini.google.com 下的完整 cookie，至少含 SID / HSID / SSID / APISID / SAPISID / __Secure-1PSID）")
+		return 0, fmt.Errorf("la cookie no tiene SAPISID; seguramente no se copió completa (hace falta la cookie completa de gemini.google.com, con al menos SID / HSID / SSID / APISID / SAPISID / __Secure-1PSID)")
 	}
 	return accountInsert(label, c, note)
 }
 
-// accountAdopt 是启动时导入既有配置专用的：**不做 SAPISID 检查**。
+// accountAdopt es específica de la importación de la configuración existente al arrancar:
+// **no comprueba el SAPISID**.
 //
-// 判据是「升级不能改变用户已有配置的可用性」。缺 SAPISID 的 cookie 在旧版是被
-// 原样当 Cookie 头发出去的（只是算不出 SAPISIDHASH 授权头），能不能用由上游说了算 ——
-// 不该在升级时被我们新加的校验拦下来，让用户悄无声息地退回匿名。只警告，
-// 健康度会在面板上如实体现。
+// El criterio es «una actualización no debe cambiar la disponibilidad de la configuración
+// que el usuario ya tenía». Una cookie sin SAPISID en la versión antigua se enviaba tal cual
+// como cabecera Cookie (solo que no se podía calcular la cabecera de autorización SAPISIDHASH),
+// y si sirve o no lo decide el upstream: no deberíamos bloquearla al actualizar con una
+// validación recién añadida y hacer que el usuario vuelva al anonimato sin enterarse. Solo se
+// avisa; la salud se reflejará con veracidad en el panel.
 func accountAdopt(label, cookie, note string) (int64, error) {
 	cookie, ok := normalizeCookie(cookie, label)
 	if !ok {
-		return 0, fmt.Errorf("cookie 解析失败")
+		return 0, fmt.Errorf("fallo al analizar la cookie")
 	}
 	if extractSAPISID(cookie) == "" {
-		logf("[cookie] %s 里没有 SAPISID，算不出 SAPISIDHASH 授权头，可能只当匿名处理；"+
-			"先按原样导入，请到面板核对", label)
+		logf("[cookie] %s no tiene SAPISID; no se puede calcular la cabecera de autorización SAPISIDHASH, "+
+			"así que puede tratarse como anónima; se importa tal cual, verifíquelo en el panel", label)
 	}
 	return accountInsert(label, cookie, note)
 }
@@ -125,14 +134,14 @@ func accountAdopt(label, cookie, note string) (int64, error) {
 func accountInsert(label, cookie, note string) (int64, error) {
 	cookie = strings.TrimSpace(cookie)
 	if cookie == "" {
-		return 0, fmt.Errorf("cookie 不能为空")
+		return 0, fmt.Errorf("la cookie no puede estar vacía")
 	}
 	return insertID(
 		`INSERT INTO accounts(label, cookie, status, note, created_at) VALUES (?,?,?,?,?)`,
 		strings.TrimSpace(label), cookie, "enabled", strings.TrimSpace(note), time.Now().Unix())
 }
 
-// accountList 返回池里全部账号，按 id 升序。
+// accountList devuelve todas las cuentas del pool, en orden ascendente de id.
 func accountList() []CookieAccount {
 	rows, err := getDB().Query(
 		`SELECT id, label, cookie, status, note, created_at, last_used_at, last_ok_at, last_error, fail_count, proxy_id
@@ -153,10 +162,12 @@ func accountList() []CookieAccount {
 	return out
 }
 
-// accountByID 按 id 取一条，取不到返回 nil。
+// accountByID toma una fila por id; si no la encuentra, devuelve nil.
 //
-// 轮转会把新 cookie 写回库里，之后要用**库里那份**继续发请求 —— 手上那个
-// CookieAccount 是轮转之前的快照，接着用等于把刚刷新的值扔掉。
+// La rotación escribe la cookie nueva en la base de datos, y después hay que seguir
+// haciendo peticiones con **la de la base de datos**: el CookieAccount que tenemos en la
+// mano es una instantánea anterior a la rotación, y seguir usándola equivale a tirar el
+// valor recién refrescado.
 func accountByID(id int64) *CookieAccount {
 	var a CookieAccount
 	err := getDB().QueryRow(
@@ -170,29 +181,29 @@ func accountByID(id int64) *CookieAccount {
 	return &a
 }
 
-// accountDelete 删除一条。
+// accountDelete elimina una fila.
 func accountDelete(id int64) error {
 	_, err := getDB().Exec(`DELETE FROM accounts WHERE id=?`, id)
 	return err
 }
 
-// accountSetStatus 改状态（enabled / disabled）。
+// accountSetStatus cambia el estado (enabled / disabled).
 func accountSetStatus(id int64, status string) error {
 	if status != "enabled" && status != "disabled" {
-		return fmt.Errorf("非法状态 %q", status)
+		return fmt.Errorf("estado no válido %q", status)
 	}
 	_, err := getDB().Exec(`UPDATE accounts SET status=? WHERE id=?`, status, id)
 	return err
 }
 
-// accountUpdateMeta 改 label / note（不动 cookie 本身）。
+// accountUpdateMeta cambia label / note (sin tocar la cookie en sí).
 func accountUpdateMeta(id int64, label, note string) error {
 	_, err := getDB().Exec(`UPDATE accounts SET label=?, note=? WHERE id=?`,
 		strings.TrimSpace(label), strings.TrimSpace(note), id)
 	return err
 }
 
-// accountCount 返回 (总数, enabled 数)。
+// accountCount devuelve (total, número de enabled).
 func accountCount() (int, int) {
 	var total, enabled int
 	_ = getDB().QueryRow(`SELECT COUNT(*), SUM(CASE WHEN status='enabled' THEN 1 ELSE 0 END) FROM accounts`).
@@ -200,30 +211,37 @@ func accountCount() (int, int) {
 	return total, enabled
 }
 
-// kv 里记迁移/播种状态的键。
+// Claves de kv donde se registra el estado de la migración/siembra.
 const (
 	kvLegacyCookieDone = "legacy_single_cookie_migrated"
 	kvSeededCookieID   = "seeded_cookie_id"
 	kvSeededCookieVal  = "seeded_cookie_value"
 )
 
-// seedCookiesFromConfig 把启动参数和历史遗留的单 cookie 并进 cookie 池。
+// seedCookiesFromConfig incorpora al pool de cookies los parámetros de arranque y la
+// cookie única heredada.
 //
-// cookie 原来也有两个入口：cookie 池，和「设置」页那个池空时才用的单 cookie 输入
-// （值存 kv 的 google_cookie，或来自 --cookie-file）。跟静态代理同一个毛病 ——
-// 单 cookie 路径返回的账号 ID 是 0，而 markAccountResult 开头就是 id<=0 直接返回，
-// 于是**健康度一个字都不写**：fail_count 恒为 0、last_ok_at 恒为空，也没有轮转。
+// La cookie también tenía antes dos entradas: el pool de cookies y la entrada de cookie
+// única de la página «Ajustes», que solo se usaba cuando el pool estaba vacío (el valor se
+// guarda en el kv google_cookie, o viene de --cookie-file). El mismo defecto que con el proxy
+// estático: la ruta de cookie única devuelve un ID de cuenta 0, y markAccountResult empieza
+// con id<=0 y retorna directamente, de modo que **no escribe ni rastro de salud**: fail_count
+// siempre 0, last_ok_at siempre vacío, y sin rotación.
 //
-//   - kv 里的 google_cookie：一次性迁入，用独立标记记"迁过了"，原值不动
-//   - cfg.CookieFile（--cookie-file）：声明式跟随，内容变了替换同一条记录
+//   - google_cookie en kv: migración única, con una marca aparte que registra "ya migrado",
+//     sin tocar el valor original
+//   - cfg.CookieFile (--cookie-file): seguimiento declarativo; si el contenido cambia, se
+//     reemplaza la misma fila
 func seedCookiesFromConfig() {
 	migrateLegacyCookie()
 	syncSeededCookieFile()
 }
 
-// migrateLegacyCookie 一次性把 kv 里遗留的单 cookie 搬进池子。
-// 三条保命规则：走 accountAdopt 不做 SAPISID 校验（旧路径不校验，升级不该改变
-// 可用性）、入池成功才标记完成、不去动 kv 里原来的值（回滚到旧版仍可用）。
+// migrateLegacyCookie traslada una sola vez al pool la cookie única heredada del kv.
+// Tres reglas vitales: pasar por accountAdopt sin validar el SAPISID (la ruta antigua no
+// validaba, y una actualización no debe cambiar la disponibilidad), marcar como completado
+// solo si la entrada al pool tuvo éxito, y no tocar el valor original del kv (para poder
+// volver a la versión antigua y seguir usándolo).
 func migrateLegacyCookie() {
 	if kvGet(kvLegacyCookieDone) == "1" {
 		return
@@ -233,34 +251,37 @@ func migrateLegacyCookie() {
 		_ = kvSet(kvLegacyCookieDone, "1")
 		return
 	}
-	cookie, ok := normalizeCookie(raw, "「设置」页的单 cookie")
+	cookie, ok := normalizeCookie(raw, "cookie única de la página Ajustes")
 	if !ok {
 		return
 	}
 	if !poolHasCookie(cookie) {
-		if _, err := accountAdopt("原单 cookie", cookie, "从「设置」页迁入"); err != nil {
-			logf("[cookie] 「设置」页的单 cookie 迁入池子失败，原值保留、下次启动重试: %v", err)
+		if _, err := accountAdopt("cookie original", cookie, "migrado desde la página Ajustes"); err != nil {
+			logf("[cookie] fallo al migrar al pool la cookie única de la página Ajustes; se conserva el valor original y se reintentará en el próximo arranque: %v", err)
 			return
 		}
-		logf("[cookie] 「设置」页的单 cookie 已迁入 cookie 池")
+		logf("[cookie] la cookie única de la página Ajustes ya se migró al pool de cookies")
 	}
 	_ = kvSet(kvLegacyCookieDone, "1")
 }
 
-// syncSeededCookieFile 让池子里跟着 --cookie-file 走一条记录。
+// syncSeededCookieFile hace que en el pool siga una fila a --cookie-file.
 //
-// 跟 --proxy 同一套：文件内容变了就撤下旧的那条再建新的，而不是又加一条。
-// 按内容去重挡不住这个 —— 定期轮换 cookie.txt 的部署会一次次往池子里堆死 cookie，
-// 而它们仍然 enabled，仍然参与轮转，于是每 N 个请求就有一个注定失败。
-// 内容没变时完全不碰池子，面板上的增删改停用都以面板为准。
+// El mismo esquema que con --proxy: si el contenido del archivo cambia, se retira la fila
+// antigua y se crea una nueva, en lugar de añadir otra. La deduplicación por contenido no
+// evita esto: un despliegue que rotacione cookie.txt periódicamente iría apilando cookies
+// muertas en el pool, que seguirían enabled y participando en la rotación, así que cada N
+// peticiones habría una condenada al fracaso. Si el contenido no cambia, no se toca el pool
+// en absoluto; las altas, bajas, cambios y desactivaciones del panel mandan en el panel.
 func syncSeededCookieFile() {
 	var cur string
 	if cfg.CookieFile != "" {
 		data, err := os.ReadFile(cfg.CookieFile)
 		if err != nil {
-			// 读不到就当没配过：宁可保持现状，也不能因为容器少挂一个卷
-			// 就把用户在用的 cookie 撤下来。
-			logf("[cookie] 读不了 --cookie-file %s，池子保持不变: %v", cfg.CookieFile, err)
+			// Si no se puede leer, se trata como no configurado: mejor mantener el estado
+			// actual que retirar la cookie que el usuario está usando porque al contenedor le
+			// falte un volumen.
+			logf("[cookie] no se puede leer --cookie-file %s; el pool no cambia: %v", cfg.CookieFile, err)
 			return
 		}
 		cur = strings.TrimSpace(string(data))
@@ -281,7 +302,7 @@ func syncSeededCookieFile() {
 	if cur == "" {
 		_ = kvSet(kvSeededCookieVal, "")
 		_ = kvSet(kvSeededCookieID, "")
-		logf("[cookie] --cookie-file 已移除，对应的池子记录一并撤下")
+		logf("[cookie] --cookie-file se ha eliminado; se retira también su fila del pool")
 		return
 	}
 	if poolHasCookie(cur) {
@@ -289,18 +310,19 @@ func syncSeededCookieFile() {
 		_ = kvSet(kvSeededCookieID, "")
 		return
 	}
-	id, err := accountAdopt("cookie-file", cur, "来自 --cookie-file")
+	id, err := accountAdopt("cookie-file", cur, "desde --cookie-file")
 	if err != nil {
-		logf("[cookie] --cookie-file 入池失败: %v", err)
+		logf("[cookie] fallo al incorporar --cookie-file al pool: %v", err)
 		return
 	}
 	_ = kvSet(kvSeededCookieVal, cur)
 	_ = kvSet(kvSeededCookieID, strconv.FormatInt(id, 10))
-	logf("[cookie] --cookie-file 的 cookie 已加入 cookie 池")
+	logf("[cookie] la cookie de --cookie-file ya se ha añadido al pool de cookies")
 }
 
-// dropSeededCookie 撤掉上一次由 --cookie-file 建的那条。
-// 只在内容还是我们写进去的那份时才删——用户在面板改过就说明他接管了。
+// dropSeededCookie retira la fila creada la última vez por --cookie-file.
+// Solo se borra si el contenido sigue siendo el que escribimos: si el usuario lo ha cambiado
+// en el panel, es que ha tomado el control.
 func dropSeededCookie(prevCookie string) {
 	idStr := kvGet(kvSeededCookieID)
 	if idStr == "" || prevCookie == "" {
@@ -314,7 +336,7 @@ func dropSeededCookie(prevCookie string) {
 		if a.ID == id {
 			if a.Cookie == prevCookie {
 				if err := accountDelete(id); err != nil {
-					logf("[cookie] 撤下旧的 --cookie-file 记录失败: %v", err)
+					logf("[cookie] fallo al retirar el registro antiguo de --cookie-file: %v", err)
 				}
 			}
 			return
@@ -322,20 +344,23 @@ func dropSeededCookie(prevCookie string) {
 	}
 }
 
-// 面板逐项填写模式列出的 cookie，同时也是拼串时的固定顺序。
-// 顺序必须确定：同一份 cookie 若因键顺序不同拼出两种串，按内容去重就失效了。
+// Las cookies que enumera el modo de relleno por ítems del panel, y a la vez el orden fijo
+// al componer la cadena. El orden debe ser determinista: si una misma cookie compone dos
+// cadenas por distinto orden de claves, la deduplicación por contenido deja de funcionar.
 var cookieTemplateOrder = []string{
 	"SID", "HSID", "SSID", "APISID", "SAPISID", "__Secure-1PSID", "__Secure-1PSIDTS",
 }
 
-// normalizeCookie 把各种输入形态归一化成池子要的裸 "k=v; k=v" 串。
+// normalizeCookie normaliza las distintas formas de entrada a la cadena desnuda
+// "k=v; k=v" que quiere el pool.
 //
-// 吃三种：
-//   - 裸串，原样返回
-//   - 旧单 cookie 路径的 {"cookie":"k=v; k=v","sapisid":"..."}
-//   - 面板逐项模式的 {"SID":"a","SAPISID":"b",...}
+// Acepta tres:
+//   - cadena desnuda, se devuelve tal cual
+//   - {"cookie":"k=v; k=v","sapisid":"..."} de la ruta antigua de cookie única
+//   - {"SID":"a","SAPISID":"b",...} del modo por ítems del panel
 //
-// 不归一化的话池子里会存进一整段 JSON，SAPISID 提取和后续请求全错。
+// Sin normalizar, en el pool se guardaría un bloque JSON entero, y la extracción de SAPISID
+// y las peticiones posteriores fallarían todos.
 func normalizeCookie(raw, who string) (string, bool) {
 	raw = strings.TrimSpace(raw)
 	if !strings.HasPrefix(raw, "{") {
@@ -343,7 +368,7 @@ func normalizeCookie(raw, who string) (string, bool) {
 	}
 	var m map[string]interface{}
 	if err := json.Unmarshal([]byte(raw), &m); err != nil {
-		logf("[cookie] %s 是 JSON 但解析失败，跳过: %v", who, err)
+		logf("[cookie] %s es JSON pero falla al analizarse; se omite: %v", who, err)
 		return "", false
 	}
 	if c, ok := m["cookie"].(string); ok && strings.TrimSpace(c) != "" {
@@ -362,7 +387,8 @@ func normalizeCookie(raw, who string) (string, bool) {
 			parts = append(parts, k+"="+v)
 		}
 	}
-	// 用户从 DevTools 多复制几项进来不能丢，附在模板字段后面按名字排序
+	// Si el usuario copia de más algunos ítems desde DevTools no se deben perder: se añaden
+	// tras los campos de la plantilla, ordenados por nombre
 	var extra []string
 	for k := range m {
 		if !inTemplate[k] && k != "sapisid" && str(k) != "" {
@@ -374,7 +400,7 @@ func normalizeCookie(raw, who string) (string, bool) {
 		parts = append(parts, k+"="+str(k))
 	}
 	if len(parts) == 0 {
-		logf("[cookie] %s 是 JSON 但一项非空值都没有，跳过", who)
+		logf("[cookie] %s es JSON pero no tiene ni un valor no vacío; se omite", who)
 		return "", false
 	}
 	return strings.Join(parts, "; "), true
@@ -389,33 +415,42 @@ func poolHasCookie(cookie string) bool {
 	return false
 }
 
-// pickMu 把「SELECT 最久未用的号 + UPDATE 标记它刚用过」串成原子操作。
-// 不加锁时两个并发请求会 SELECT 到同一个"最久未用"的号、各自 UPDATE，于是同一瞬间
-// 双双用它，轮转形同虚设（CLAUDE.md 记的已知缺陷）。本进程内一把锁就够——限流器、
-// 轮转调度、代理池都是进程内状态，这个反代天生单实例，不存在跨进程并发挑号；也就
-// 不必为此上跨方言的事务/行锁（sqlite 无 FOR UPDATE、mysql 无 RETURNING，那条路
-// 全是方言分支）。挑号只是一次极快的 SELECT+UPDATE，串行化的争用可忽略。
+// pickMu convierte «SELECT de la cuenta usada hace más tiempo + UPDATE que la marca como
+// recién usada» en una operación atómica. Sin el bloqueo, dos peticiones concurrentes harían
+// SELECT de la misma cuenta "usada hace más tiempo" y cada una su UPDATE, de modo que la
+// usarían a la vez en el mismo instante y la rotación sería papel mojado (defecto conocido
+// anotado en CLAUDE.md). Con un solo mutex dentro del proceso basta: el limitador de tasa, el
+// planificador de rotación y el pool de proxies son estado del proceso, y este proxy inverso
+// es de un solo proceso por naturaleza, así que no hay selección de cuentas entre procesos;
+// tampoco hace falta recurrir a transacciones/bloqueos de fila entre dialectos (sqlite no tiene
+// FOR UPDATE, mysql no tiene RETURNING, y ese camino es todo ramas por dialecto). Seleccionar
+// una cuenta no es más que un SELECT+UPDATE muy rápido, y la contención de la serialización es
+// despreciable.
 var pickMu sync.Mutex
 
-// pickCookieAccount 从池里挑一个 enabled 账号，按 last_used_at 最久优先，
-// 挑中后立刻把 last_used_at 记为现在（下次轮到别人）。池空返回 (nil,false)。
+// pickCookieAccount elige una cuenta enabled del pool, dando prioridad a la de last_used_at
+// más antiguo, y en cuanto la elige marca last_used_at como ahora (la próxima vez le tocará a
+// otra). Si el pool está vacío, devuelve (nil,false).
 func pickCookieAccount() (*CookieAccount, bool) {
 	return pickCookieAccountExcept(nil)
 }
 
-// pickCookieAccountExcept 同上，但跳过本次已经试过的账号。
+// pickCookieAccountExcept es igual, pero omite las cuentas ya probadas en esta operación.
 //
-// 存在的理由：一个 cookie 失效不该让整个请求失败。池子里 2 个号坏 1 个，
-// 轮转会让大约一半请求撞上坏号 —— 表现就是"成功率莫名其妙很低"，而每次失败
-// 看起来都像是上游的问题。
+// Motivo de su existencia: que una cookie falle no debería hacer fallar toda la petición. Si
+// en el pool hay 2 cuentas y 1 está mal, la rotación hará que aproximadamente la mitad de las
+// peticiones choquen con la mala: se manifiesta como "una tasa de éxito inexplicablemente
+// baja", y cada fallo parece un problema del upstream.
 func pickCookieAccountExcept(skip map[int64]bool) (*CookieAccount, bool) {
 	pickMu.Lock()
 	defer pickMu.Unlock()
-	// 健康的排前面，同样健康的按最久未用轮转。
+	// Las sanas van delante; entre las igual de sanas, rotación por la usada hace más tiempo.
 	//
-	// 不这么排的话坏号会跟好号平起平坐地轮到，而挑到坏号时它没有绑定的出口，
-	// 出口就按"无偏好"选了；等换号换到好号，出口已经定死 —— 于是好号的出口
-	// 粘性被坏号带偏。实测 1 好 2 坏时出口在两个代理间对半分。
+	// Sin este orden, las malas entrarían en el turno de igual a igual con las buenas, y al
+	// elegir una mala, como no tiene salida vinculada, la salida se escogería "sin preferencia";
+	// cuando luego toca una buena, la salida ya está fijada, así que la afinidad de salida de la
+	// buena queda desviada por la mala. En pruebas, con 1 buena y 2 malas la salida se repartía
+	// a partes iguales entre dos proxies.
 	rows, err := getDB().Query(
 		`SELECT id, label, cookie, status, note, created_at, last_used_at, last_ok_at, last_error, fail_count, proxy_id
 		 FROM accounts WHERE status='enabled' ORDER BY fail_count ASC, last_used_at ASC, id ASC`)
@@ -438,13 +473,15 @@ func pickCookieAccountExcept(skip map[int64]bool) (*CookieAccount, bool) {
 	return nil, false
 }
 
-// markCookieByStatus 按上游返回回写 cookie 健康度。
+// markCookieByStatus escribe de vuelta la salud de la cookie según lo que devuelve el upstream.
 //
-// 只把明确的鉴权失败（401/403）算作 cookie 的错。网络错误、代理失败、302 → sorry
-// （IP 被 Google 拦）一律不计——实测住宅代理出口退化率高达 75%，把这些算进
-// fail_count 会让它变成代理噪音，好 cookie 会被误伤成"失败最多"。
+// Solo cuenta como culpa de la cookie el fallo de autenticación explícito (401/403). Los
+// errores de red, los fallos del proxy y el 302 → sorry (IP bloqueada por Google) no cuentan
+// nunca: en pruebas, la tasa de degradación de las salidas de proxies residenciales llega al
+// 75%, y meterlos en fail_count lo convertiría en ruido del proxy, y cookies buenas quedarían
+// dañadas como "las que más fallan".
 //
-// statusCode 为 0 表示压根没拿到响应（网络层失败）。
+// statusCode igual a 0 significa que no se obtuvo respuesta alguna (fallo en la capa de red).
 func markCookieByStatus(id int64, statusCode int, errStr string) {
 	switch {
 	case statusCode == 200:
@@ -452,18 +489,21 @@ func markCookieByStatus(id int64, statusCode int, errStr string) {
 	case statusCode == 401 || statusCode == 403:
 		markAccountResult(id, false, errStr)
 	default:
-		// 其余情况责任不在 cookie，不动它的健康度
+		// En los demás casos la culpa no es de la cookie; no se toca su salud
 	}
 }
 
-// markAccountResult 请求结束后回写结果：成功清零 fail_count 并记 last_ok_at；
-// 失败累加 fail_count 并记 last_error。
+// markAccountResult escribe el resultado al terminar la petición: en caso de éxito pone
+// fail_count a cero y registra last_ok_at; en caso de fallo incrementa fail_count y registra
+// last_error.
 //
-// 注意 last_ok_at 的语义是"这个 cookie 参与的请求成功过"，**不等于"cookie 仍然
-// 有效"**：cookie 过期后 Gemini 不报错，只是把你当匿名用户，纯文本请求照样 200。
-// 要真正验有效性，最省事的判据是请求 gemini-3.1-pro：cookie 有效时服务端回报
-// "3.1 Pro" 并带思考链，失效时静默降级成 3.5 Flash-Lite。（xsrf.go 取 token 时
-// 若页面里没有 SNlM0e，也会当场判定 cookie 失效。）
+// Ojo: la semántica de last_ok_at es "una petición en la que participó esta cookie tuvo
+// éxito", lo que **no equivale a "la cookie sigue siendo válida"**: cuando la cookie caduca,
+// Gemini no da error, solo te trata como usuario anónimo, y una petición de solo texto sigue
+// devolviendo 200. Para verificar de verdad la validez, el criterio más sencillo es pedir
+// gemini-3.1-pro: con la cookie válida el servidor responde "3.1 Pro" y con cadena de
+// pensamiento; si no es válida, degrada en silencio a 3.5 Flash-Lite. (En xsrf.go, al obtener
+// el token, si la página no tiene SNlM0e también se determina ahí mismo que la cookie no vale.)
 func markAccountResult(id int64, ok bool, errStr string) {
 	if id <= 0 {
 		return
@@ -480,21 +520,27 @@ func markAccountResult(id int64, ok bool, errStr string) {
 	autoDisableIfDead(id)
 }
 
-// maxCookieAuthFailures 是连续几次鉴权失败之后自动停用账号。
+// maxCookieAuthFailures es cuántos fallos de autenticación consecutivos desactivan la cuenta
+// automáticamente.
 //
-// 只有 401/403 会累加 fail_count（见 markCookieByStatus），网络错误和被 Google 拦
-// 都不算，所以连着 3 次基本等于 cookie 真的没了。取 3 不取 1：偶发的 XSRF 页面抖动
-// 也会走到这条路上，一次就停用会误伤。
+// Solo 401/403 incrementan fail_count (ver markCookieByStatus); los errores de red y los
+// bloqueos de Google no cuentan, así que 3 seguidos equivalen básicamente a que la cookie ya
+// no está. Se escoge 3 y no 1: un parpadeo ocasional de la página XSRF también llega por este
+// camino, y desactivar a la primera haría daño.
 const maxCookieAuthFailures = 3
 
-// autoDisableIfDead 把连续失败到头的账号停用。
+// autoDisableIfDead desactiva la cuenta que acumula fallos consecutivos hasta el límite.
 //
-// 为什么要自动停：挑号是 `ORDER BY fail_count ASC` ——坏号排在最后，但**池子里只剩
-// 坏号时它照样会被选中**，于是每个请求都要把它试一遍才轮到报错。而 fail_count 只有
-// 成功才清零，死号永远不会自己好，等于让每个请求都为它付一次 XSRF 往返。
+// Por qué se desactiva automáticamente: la selección es `ORDER BY fail_count ASC`, así que
+// las malas van al final, pero **si en el pool solo quedan malas, se elegirán igualmente**, y
+// entonces cada petición tendrá que probarlas antes de llegar al error. Y como fail_count solo
+// se pone a cero con un éxito, una cuenta muerta nunca se recupera sola, lo que equivale a que
+// cada petición pague un ida y vuelta XSRF por ella.
 //
-// 停用而不是删除：cookie 是用户导入的数据，判断可能出错（比如出口连续被拦也可能
-// 表现成鉴权失败），留着让用户在面板上看到并自己决定。
+// Se desactiva en vez de eliminar: la cookie son datos que ha importado el usuario y la
+// valoración puede equivocarse (por ejemplo, que la salida sea bloqueada de forma continuada
+// también puede manifestarse como fallo de autenticación); se deja para que el usuario la vea
+// en el panel y decida por sí mismo.
 func autoDisableIfDead(id int64) {
 	var fails int64
 	var status string
@@ -505,11 +551,11 @@ func autoDisableIfDead(id int64) {
 	}
 	if _, err := getDB().Exec(
 		`UPDATE accounts SET status='disabled' WHERE id=? AND status='enabled'`, id); err == nil {
-		logf("[cookie] 账号 #%d 连续 %d 次鉴权失败，已自动停用", id, fails)
+		logf("[cookie] la cuenta #%d acumula %d fallos de autenticación consecutivos; se ha desactivado automáticamente", id, fails)
 	}
 }
 
-// CookieCheck 是一次 cookie 有效性检测的结果。
+// CookieCheck es el resultado de una comprobación de validez de cookie.
 type CookieCheck struct {
 	OK        bool   `json:"ok"`
 	Detail    string `json:"detail"`
@@ -517,27 +563,29 @@ type CookieCheck struct {
 	TookMs    int64  `json:"took_ms"`
 }
 
-// checkAccountCookie 判断一条 cookie 还有没有登录态。
+// checkAccountCookie determina si una cookie aún tiene sesión iniciada.
 //
-// 判据是 /app 页面里有没有 SNlM0e：cookie 失效时 Gemini 不报错，只是把你当匿名
-// 用户，纯文本请求照样 200 —— 所以不能拿"请求成功"当有效性判据。这个页面没有
-// SNlM0e 就说明服务端没认这个登录态。
+// El criterio es si la página /app tiene SNlM0e: cuando la cookie no es válida, Gemini no da
+// error, solo te trata como usuario anónimo, y una petición de solo texto sigue devolviendo
+// 200, así que no se puede tomar "la petición tuvo éxito" como criterio de validez. Que esta
+// página no tenga SNlM0e indica que el servidor no reconoce esta sesión iniciada.
 //
-// 只抓页面，不发对话，不消耗生成配额。
+// Solo se descarga la página: no se envía conversación ni se consume cuota de generación.
 func checkAccountCookie(a CookieAccount) CookieCheck {
 	t0 := time.Now()
 	picked, ok, err := acquireSlot(a.ProxyID)
 	if !ok {
-		return CookieCheck{Detail: "拿不到出口：" + err.Error()}
+		return CookieCheck{Detail: "no se puede obtener salida: " + err.Error()}
 	}
 	defer releaseSlot(picked.ID)
 	proxyURL := picked.URL
 	name := picked.Name
 	if name == "" {
-		name = "直连"
+		name = "Directo"
 	}
 
-	// 先作废缓存，否则可能拿到几分钟前的旧结论，检测就没意义了
+	// Primero se invalida la caché; de lo contrario se podría obtener una conclusión antigua
+	// de hace unos minutos y la comprobación no tendría sentido
 	invalidateXSRF(a.Cookie)
 	_, err = getXSRF(a.Cookie, proxyURL)
 	took := time.Since(t0).Milliseconds()
@@ -546,29 +594,30 @@ func checkAccountCookie(a CookieAccount) CookieCheck {
 		return CookieCheck{Detail: explainCookieFailure(err), ProxyName: name, TookMs: took}
 	}
 	markAccountResult(a.ID, true, "")
-	detail := "登录态有效"
+	detail := "sesión iniciada válida"
 	if extractSAPISID(a.Cookie) == "" {
-		detail += "，但缺 SAPISID（算不出授权头，部分接口会被当匿名）"
+		detail += ", pero falta SAPISID (no se puede calcular la cabecera de autorización; en algunas interfaces se tratará como anónimo)"
 	}
 	return CookieCheck{OK: true, Detail: detail, ProxyName: name, TookMs: took}
 }
 
-// explainCookieFailure 把底层错误翻成运维看得懂的结论。
+// explainCookieFailure traduce el error de bajo nivel a una conclusión que el operador entienda.
 func explainCookieFailure(err error) string {
 	msg := err.Error()
 	switch {
 	case strings.Contains(msg, "no SNlM0e"):
-		return "cookie 已失效：页面能打开但没有登录态，请求会被当匿名处理"
+		return "la cookie ya no es válida: la página abre pero no hay sesión iniciada; las peticiones se tratarán como anónimas"
 	case strings.Contains(msg, "HTTP 302"):
-		return "cookie 无效：被重定向到登录页"
+		return "cookie no válida: redirigida a la página de inicio de sesión"
 	case strings.Contains(msg, "HTTP 429"), strings.Contains(msg, "sorry"):
-		return "出口被上游限流，换个代理再试（不是 cookie 的问题）"
+		return "el upstream limita la tasa de la salida; pruebe con otro proxy (no es problema de la cookie)"
 	default:
-		return "检测失败：" + msg
+		return "fallo la comprobación: " + msg
 	}
 }
 
-// bindAccountProxy 记住这个账号这次用的出口，下次优先复用。
+// bindAccountProxy recuerda la salida que ha usado esta cuenta esta vez, para reutilizarla con
+// preferencia la próxima.
 func bindAccountProxy(accountID, proxyID int64) {
 	if accountID <= 0 {
 		return
@@ -576,7 +625,8 @@ func bindAccountProxy(accountID, proxyID int64) {
 	_, _ = getDB().Exec(`UPDATE accounts SET proxy_id=? WHERE id=?`, proxyID, accountID)
 }
 
-// accountDisplayName 面板/记录里显示的账号名，没填标签就用 #id。
+// accountDisplayName es el nombre de cuenta que se muestra en el panel/registro; si no hay
+// etiqueta, usa #id.
 func accountDisplayName(a *CookieAccount) string {
 	if a.Label != "" {
 		return a.Label
@@ -584,14 +634,17 @@ func accountDisplayName(a *CookieAccount) string {
 	return fmt.Sprintf("#%d", a.ID)
 }
 
-// mergeSetCookie 把响应下发的 Set-Cookie 合并进现有 cookie 串。
+// mergeSetCookie fusiona el Set-Cookie que envía la respuesta en la cadena de cookie actual.
 //
-// 服务端几乎每个响应都在刷新 SIDCC / __Secure-1PSIDCC / __Secure-3PSIDCC
-// （2 小时抓包里 batchexecute 就刷了 468 次），浏览器收下再带回去。一直发旧值的
-// 客户端会被判定为过期会话 —— 实测不合并的号活一两小时就失效。
+// El servidor refresca SIDCC / __Secure-1PSIDCC / __Secure-3PSIDCC en casi todas las
+// respuestas (en una captura de 2 horas, batchexecute lo hizo 468 veces); el navegador las
+// acepta y las devuelve. Un cliente que envía siempre el valor antiguo se considera sesión
+// caducada: en pruebas, una cuenta sin fusionar solo aguanta una o dos horas antes de dejar de
+// ser válida.
 //
-// 顺序保持原样、新键追加在后：cookie 顺序本身不影响语义，但保持稳定能让
-// poolHasCookie 那类按内容比对的地方不至于每次都认成新值。
+// El orden se mantiene y las claves nuevas se añaden al final: el orden de las cookies en sí
+// no afecta a la semántica, pero mantenerlo estable evita que los sitios que comparan por
+// contenido, como poolHasCookie, las tomen por un valor nuevo cada vez.
 func mergeSetCookie(cookie string, setCookie []string) string {
 	if len(setCookie) == 0 {
 		return cookie
@@ -604,7 +657,8 @@ func mergeSetCookie(cookie string, setCookie []string) string {
 			continue
 		}
 		name, val := first[:i], first[i+1:]
-		// 删除指令（过期时间在过去 + 空值）不能当成新值写进去
+		// Las instrucciones de borrado (fecha de expiración en el pasado + valor vacío) no se
+		// pueden escribir como valor nuevo
 		if val == "" && strings.Contains(strings.ToLower(sc), "expires=thu, 01 jan 1970") {
 			continue
 		}
@@ -631,11 +685,12 @@ func mergeSetCookie(cookie string, setCookie []string) string {
 	return strings.Join(parts, "; ")
 }
 
-// cookieIdentity 取能代表"这是哪个账号"的那几项。
+// cookieIdentity toma las entradas que representan "de qué cuenta se trata".
 //
-// SAPISID 用来算授权头、__Secure-1PSID 是会话主键，两者都不随刷新变化（2 小时
-// 抓包里 0 次变动，变的只有 *SIDCC 和 *SIDTS 那两族）。所以它们变了就说明这份
-// cookie 已经不是原来那个账号了。
+// SAPISID sirve para calcular la cabecera de autorización y __Secure-1PSID es la clave
+// primaria de la sesión; ninguna de las dos cambia con el refresco (0 cambios en una captura
+// de 2 horas: solo cambiaban las dos familias *SIDCC y *SIDTS). Por eso, si cambian, es señal
+// de que esta cookie ya no es la de la cuenta original.
 func cookieIdentity(cookie string) string {
 	var sapisid, psid string
 	for _, kv := range splitCookiePairs(cookie) {
@@ -649,12 +704,14 @@ func cookieIdentity(cookie string) string {
 	return sapisid + "|" + psid
 }
 
-// updateAccountCookie 把刷新后的 cookie 写回账号。
+// updateAccountCookie escribe en la cuenta la cookie ya refrescada.
 //
-// 写之前先比对身份：合并 Set-Cookie 时上游理论上可以把整套会话换掉（比如响应里
-// 带了另一个账号的 SID），照单全收就等于把 A 号的凭据写进 B 号那一行。之后这个号
-// 在面板上显示的还是原来的标签，实际发出去的却是别人的会话，而且**完全静默**。
-// 身份对不上就不写，宁可让这次刷新白费。
+// Antes de escribir, compara la identidad: al fusionar Set-Cookie, en teoría el upstream
+// podría cambiar toda la sesión (por ejemplo, si la respuesta trae el SID de otra cuenta), y
+// aceptarlo tal cual equivaldría a escribir las credenciales de la cuenta A en la fila de la
+// cuenta B. Después, esta cuenta seguiría mostrando en el panel su etiqueta original, pero lo
+// que realmente se envía es la sesión de otro, y **del todo en silencio**. Si la identidad no
+// coincide, no se escribe: mejor dejar el refresco en vano.
 func updateAccountCookie(id int64, cookie string) {
 	if id <= 0 || cookie == "" {
 		return
@@ -662,7 +719,7 @@ func updateAccountCookie(id int64, cookie string) {
 	var cur string
 	if err := getDB().QueryRow(`SELECT cookie FROM accounts WHERE id=?`, id).Scan(&cur); err == nil {
 		if got, want := cookieIdentity(cookie), cookieIdentity(cur); got != want {
-			logf("[cookie] 账号 #%d 的刷新结果身份对不上，已丢弃不写回", id)
+			logf("[cookie] la identidad del resultado del refresco de la cuenta #%d no coincide; se descarta y no se escribe de vuelta", id)
 			return
 		}
 	}

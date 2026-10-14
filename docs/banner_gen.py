@@ -1,14 +1,17 @@
-"""生成 README 横幅（docs/banner.svg）。
+"""Genera el banner del README (docs/banner.svg).
 
-用法：python docs/banner_gen.py
+Uso: python docs/banner_gen.py
 
-设计取向：字标为主，不玩概念。全图只有一处彩色——字标下那条渐变线，
-用的是管理面板同一套品牌色（#4285F4 → #9B72CB → #D96570），
-在面板里它也只出现在一个地方（封禁红线轨道）。
+Enfoque de diseño: prioridad al logotipo tipográfico, sin conceptos rebuscados. En toda
+la imagen solo hay un elemento con color: la línea degradada bajo el logotipo, que usa
+la misma paleta de marca que el panel de administración (#4285F4 → #9B72CB → #D96570),
+y en el panel también aparece en un único lugar (la pista roja de bloqueo).
 
-两个约束来自 GitHub 的渲染方式（README 里的 SVG 是当图片渲染的）：
-- 不用滤镜/阴影，糊开的发光在小尺寸下只会变脏
-- 字体走系统等宽栈，不引外部字体（<img> 沙箱会拦外链）
+Dos restricciones vienen de cómo renderiza GitHub (el SVG en el README se renderiza como
+imagen):
+- Sin filtros/sombras: un resplandor difuminado solo se ve sucio a tamaños pequeños
+- La fuente usa la pila monoespaciada del sistema, sin fuentes externas (el sandbox de
+  <img> bloquea enlaces externos)
 """
 import io
 import os
@@ -37,8 +40,8 @@ p = [
     f'text-anchor="middle">gemini.google.com &#8594; OpenAI-compatible /v1</text>',
 ]
 
-# 一行胶囊，手工居中排版（SVG 没有 flex）
-FW, PAD, GAP = 7.1, 15, 11        # FW = 12px 等宽字的近似字宽
+# Una fila de pastillas, centrada a mano (el SVG no tiene flex)
+FW, PAD, GAP = 7.1, 15, 11        # FW = ancho aproximado de un carácter monoespaciado de 12px
 widths = [len(c) * FW + PAD * 2 for c in CHIPS]
 x = cx - (sum(widths) + GAP * (len(CHIPS) - 1)) / 2
 for c, w in zip(CHIPS, widths):
@@ -50,4 +53,4 @@ for c, w in zip(CHIPS, widths):
 
 p.append("</svg>")
 io.open(OUT, "w", encoding="utf-8").write("\n".join(p))
-print(f"已写 {OUT}  ({os.path.getsize(OUT)} 字节)")
+print(f"Escrito {OUT}  ({os.path.getsize(OUT)} bytes)")

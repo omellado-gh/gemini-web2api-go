@@ -20,8 +20,8 @@ var (
 	clientCacheMu sync.RWMutex
 )
 
-// resolveProfile maps a config string to a tls-client ClientProfile.
-// Defaults to Chrome_146 (matches Python v2's curl_cffi chrome146).
+// resolveProfile mapea cadena de configuración a perfil tls-client.
+// Por defecto Chrome_146 (coincide con curl_cffi chrome146 de Python v2).
 func resolveProfile(name string) profiles.ClientProfile {
 	switch strings.ToLower(name) {
 	case "chrome_120":
@@ -51,9 +51,9 @@ func resolveProfile(name string) profiles.ClientProfile {
 	}
 }
 
-// getTLSClient returns a tls-client (Chrome 146 fingerprint) for direct connections only.
-// For proxied connections we use stdlib (see getStdlibClient) — tls-client's SOCKS5
-// implementation is fragile compared to net/http.
+// getTLSClient devuelve cliente tls-client con huella Chrome 146, solo para conexiones directas.
+// Para conexiones por proxy se usa stdlib (ver getStdlibClient): implementación SOCKS5 de tls-client es frágil.
+// comparada con net/http.
 func getTLSClient() tls_client.HttpClient {
 	clientCacheMu.RLock()
 	if c, ok := clientCache[rtCfg().Impersonate]; ok {
@@ -81,30 +81,30 @@ func getTLSClient() tls_client.HttpClient {
 	return client
 }
 
-// ─── Stdlib HTTP client for proxied requests ─────────────────────────────────
+// ─── Cliente HTTP stdlib para solicitudes por proxy ─────────────────────────────────
 //
-// 走代理时改用 stdlib 而不是 tls-client，因为：
-// 1. stdlib 的 http.ProxyURL 原生支持 socks5:// / socks5h:// / http:// / https://，
-//    已知能过我们手头的代理。
-// 2. tls-client 自带的 SOCKS 实现在某些代理端会 EOF（已实测）。
+// Se usa stdlib para conexiones proxy (no tls-client) por:
+// 1. http.ProxyURL de stdlib soporta nativo socks5://, socks5h://, http://, https://
+//    y funciona con proxies probados.
+// 2. Implementación SOCKS de tls-client devuelve EOF con algunos proxies (comprobado).
 //
-// 代价要写清楚：走代理时 Google 看到的是**我们自己的 TLS 指纹**，即 Go 标准库的，
-// 不是 Chrome 146 的。HTTP CONNECT 只建隧道，TLS 是我们跟目标端到端握的。
-// JA3 回显实测：stdlib 直连和过代理是同一个 JA3（03117a8e…），而同一个代理下换成
-// tls-client 就变成另一个（2d25c563…）——两条判据都说明代理不介入 TLS。
+// Compromiso: con proxy, Google ve **nuestra propia huella TLS** (stdlib Go),
+// no Chrome 146. HTTP CONNECT solo túnel; TLS es extremo-a-extremo con destino.
+// JA3 medido: mismo JA3 con stdlib directo o vía proxy; con mismo proxy pero tls-client cambia JA3.
+// Lo que indica que el proxy no interviene en TLS.
 //
-// 但这不构成换回 tls-client 的理由：同时起跑的对照里 tls-client Chrome_146 打到
-// 111 次被拦、Go stdlib 103 次，差 8 次；而同配置换个出口的方差能到 36%
-// （151 vs 111）。指纹差异真实存在，对封禁阈值没有可观测影响。
+// No justifica volver a tls-client: en pruebas paralelas, tls-client Chrome_146 recibió más bloqueos que stdlib;
+// diferencia pequeña; variación entre egresos llega a 36% — la huella tiene impacto limitado.
+// La diferencia de huella existe, pero no se observó impacto notable en umbral de bloqueo.
 //
-// 不走代理时仍然用 getTLSClient（保留 utls/chrome146 真指纹优势）。
+// Sin proxy se sigue usando getTLSClient para conservar huella real utls/chrome146.
 
 var (
 	stdlibClientCache sync.Map // proxyURL -> *http.Client
 )
 
-// getStdlibClient returns an http.Client routed through proxyURL.
-// proxyURL must not be empty (caller checks).
+// getStdlibClient devuelve http.Client con ruta por proxyURL.
+// proxyURL no debe estar vacío (verificado por llamador).
 func getStdlibClient(proxyURL string) *http.Client {
 	if cached, ok := stdlibClientCache.Load(proxyURL); ok {
 		return cached.(*http.Client)
@@ -114,7 +114,7 @@ func getStdlibClient(proxyURL string) *http.Client {
 		MaxIdleConnsPerHost: 20,
 		IdleConnTimeout:     90 * time.Second,
 		DisableCompression:  false,
-		// 走代理时不强求 HTTP/2，部分代理不支持。
+		// Con proxy no se fuerza HTTP/2 (algunos proxies no lo soportan).
 		ForceAttemptHTTP2: false,
 	}
 	if u, err := url.Parse(proxyURL); err == nil {
@@ -123,7 +123,7 @@ func getStdlibClient(proxyURL string) *http.Client {
 	c := &http.Client{
 		Timeout:   time.Duration(rtCfg().RequestTimeout) * time.Second,
 		Transport: t,
-		// 跟 tls-client 一致：不自动跟随重定向（302 是诊断信号）
+		// Igual que tls-client: no seguir redirecciones automáticamente (302 es señal diagnóstica).
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
@@ -132,15 +132,15 @@ func getStdlibClient(proxyURL string) *http.Client {
 	return c
 }
 
-// loadCookie reads the cookie file (Netscape one-line format or JSON).
-// loadCookie 返回 (cookie 串, SAPISID)。只有旁路探测在用 —— 正式请求那条路
-// 在 streamGenerate 里自己挑号，因为它还要挨个换号和绑定出口。
+// loadCookie lee archivo de cookie (formato Netscape una línea o JSON).
+// loadCookie devuelve (cadena cookie, SAPISID). Solo usado en sondas laterales;
+// en solicitudes reales streamGenerate selecciona cuenta (necesita rotar y vincular egreso).
 //
-// cookie 只有 cookie 池一个来源：挑一个 enabled 账号（最久未用优先，自动轮转
-// 分散单 IP 上限）。池空 = 匿名。原来那条「池空回落单 cookie」的路径已经取消，
-// 它的值在启动时被 seedCookiesFromConfig 并进池子了。
+// Solo hay una fuente de cookies: pool de cookies (cuenta habilitada con menor last_used_at; rotación automática).
+// Para repartir carga por IP. Pool vacío → modo anónimo. La ruta antigua "usar cookie única si pool vacío" se eliminó.
+// El valor se importa via seedCookiesFromConfig al pool al arrancar.
 //
-// 第三个返回值是池里那条记录的 ID，请求结束后拿它调 markCookieByStatus 回写健康度。
+// Tercer retorno (no usado aquí) era ID de registro para actualizar salud con markCookieByStatus.
 func loadCookie() (cookie, sapisid string) {
 	if a, ok := pickCookieAccount(); ok {
 		return a.Cookie, extractSAPISID(a.Cookie)
@@ -154,11 +154,11 @@ func makeSAPISIDHash(sapisid string) string {
 	return fmt.Sprintf("SAPISIDHASH %d_%s", ts, hex.EncodeToString(h[:]))
 }
 
-// ChromeUA 是给 stdlib 走代理时用的 Chrome 146 真实 UA 模板。
+// ChromeUA: plantilla UA real Chrome 146 para stdlib con proxy.
 const ChromeUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
 
-// applyChromeHeaders 给 stdlib 请求填上模拟 Chrome 146 的应用层 header。
-// utls 那层做 TLS/HTTP2 指纹我们做不到（走代理），但 header 一定要齐。
+// applyChromeHeaders añade cabeceras Chrome 146 para solicitudes stdlib.
+// No se puede emular huella TLS/HTTP2 utls con proxy, pero las cabeceras deben ser coherentes.
 func applyChromeHeaders(req *http.Request) {
 	req.Header.Set("User-Agent", ChromeUA)
 	req.Header.Set("Sec-CH-UA", `"Chromium";v="146", "Google Chrome";v="146", "Not?A_Brand";v="24"`)

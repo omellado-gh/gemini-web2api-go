@@ -461,22 +461,22 @@ func handleAdminProxyItem(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// /admin/api/usage — 返回每个 IP slot 的当前限流用量。
+// /admin/api/usage — devuelve el uso actual de limitación de tasa de cada slot IP.
 func handleAdminUsage(w http.ResponseWriter, r *http.Request) {
 	usage := allSlotUsage()
-	// 加上代理名字以便 UI 显示
+	// añade el nombre del proxy para que la UI lo muestre
 	proxyNames := map[int64]string{}
 	for _, p := range listProxies() {
 		proxyNames[p.ID] = p.Name
 	}
 	out := make([]map[string]interface{}, 0, len(usage))
 	for _, u := range usage {
-		name := "直连"
+		name := "Directo"
 		if u.ProxyID > 0 {
 			if n, ok := proxyNames[u.ProxyID]; ok {
 				name = n
 			} else {
-				name = "(已删除)"
+				name = "(eliminado)"
 			}
 		}
 		out = append(out, map[string]interface{}{
@@ -541,14 +541,14 @@ func handleAdminAPIKey(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// /admin/api/test — 端到端连通性诊断。
+// /admin/api/test — diagnóstico de conectividad extremo a extremo.
 //
-// 走完整协议路径（chrome146 指纹 + 真 StreamGenerate）但：
-//   - 不消耗限流 slot（admin 诊断不算业务流量）
-//   - 不写入 requests 表（不污染业务统计）
-//   - 返回详细原因码 + 延迟 + 上游响应片段
+// Recorre la ruta de protocolo completa (huella chrome146 + StreamGenerate real) pero:
+//   - no consume slot de limitación de tasa (el diagnóstico de admin no cuenta como tráfico de negocio)
+//   - no escribe en la tabla requests (no contamina las estadísticas de negocio)
+//   - devuelve código de motivo detallado + latencia + fragmento de respuesta del upstream
 //
-// 可选参数 ?proxy_id=N 测某个代理（id=0 测直连 / 留空 = 自动按调度规则挑一个）。
+// Parámetro opcional ?proxy_id=N para probar un proxy concreto (id=0 prueba Directo / vacío = elige uno automáticamente según las reglas de programación).
 func handleAdminTest(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	proxyIDStr := q.Get("proxy_id")
@@ -561,7 +561,7 @@ func handleAdminTest(w http.ResponseWriter, r *http.Request) {
 	var proxyID int64
 	useDirect := false
 	if proxyIDStr == "" {
-		// 自动模式：仿照 acquireSlot 优先代理池里第一个 enabled
+		// modo automático: igual que acquireSlot, prioriza el primer enabled del pool de proxies
 		for _, p := range listProxies() {
 			if p.Enabled && p.FailCount < 5 {
 				proxyURL = p.URL
@@ -572,7 +572,7 @@ func handleAdminTest(w http.ResponseWriter, r *http.Request) {
 		}
 		if proxyURL == "" {
 			useDirect = true
-			proxyName = "直连"
+			proxyName = "Directo"
 		}
 	} else {
 		var err error
@@ -583,7 +583,7 @@ func handleAdminTest(w http.ResponseWriter, r *http.Request) {
 		}
 		if proxyID == 0 {
 			useDirect = true
-			proxyName = "直连"
+			proxyName = "Directo"
 		} else {
 			found := false
 			for _, p := range listProxies() {
@@ -614,22 +614,22 @@ func handleAdminTest(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, res)
 }
 
-// handleAdminConfig 读写运行时配置。GET 返回当前值 + 各项允许范围，
-// PUT 校验后立刻生效并持久化到 kv。
+// handleAdminConfig lee y escribe la configuración en tiempo de ejecución. GET devuelve el valor actual + los rangos permitidos de cada campo,
+// PUT valida, aplica de inmediato y persiste en kv.
 func handleAdminConfig(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		writeJSON(w, 200, map[string]interface{}{
 			"config": rtCfg(),
 			"models": modelNamesSorted(),
-			// 部署期配置只读展示，改这些要动 docker-compose.yml 并重启
+			// la configuración de despliegue se muestra en solo lectura; cambiar esto requiere editar docker-compose.yml y reiniciar
 			"deploy": map[string]interface{}{
 				"host":        cfg.Host,
 				"port":        cfg.Port,
 				"db_path":     cfg.DBPath,
 				"cookie_file": cfg.CookieFile,
 				"admin_auth":  cfg.AdminToken != "",
-				// 面板的部署配置表要展示 Key 是否被启动参数锁死
+				// la tabla de configuración de despliegue del panel debe mostrar si la Key está bloqueada por los parámetros de arranque
 				"api_key_locked": apiKeyLocked,
 			},
 		})
@@ -658,18 +658,18 @@ func modelNamesSorted() []string {
 	return names
 }
 
-// classifyError 把 requests.error 归到几个可行动的类别。
+// classifyError clasifica requests.error en varias categorías accionables.
 //
-// 分类的意义在于"看到之后该做什么不一样"：上游瞬时拒绝只能重试、代理层失败
-// 该换代理或熔断、slot 满说明该加代理、协议错误才需要看代码。全混在一列原始
-// 错误串里，排查时分不出是被限流了还是真出故障。
+// El sentido de clasificar es que "lo que hay que hacer tras verlo" es distinto: un rechazo transitorio del upstream solo se reintenta, un fallo de la capa de proxy
+// obliga a cambiar de proxy o cortar el circuito, slot lleno indica que hay que añadir proxies, y solo un error de protocolo requiere mirar el código. Con todo mezclado en una sola columna de
+// cadenas de error en crudo, al depurar no se distingue si fue limitación de tasa o un fallo real.
 func classifyError(errStr string) string {
 	switch {
 	case errStr == "":
 		return ""
 	case strings.Contains(errStr, "no content frame"):
-		// 上游返回 200 但一个内容帧都没有。实测是瞬时拒绝，隔几分钟自行恢复，
-		// 跟频率/并发/累积次数都无关，重试即可。
+		// el upstream devuelve 200 pero sin ninguna trama de contenido. Se comprobó que es un rechazo transitorio que se recupera solo en unos minutos,
+		// y no guarda relación con frecuencia/concurrencia/acumulación; basta con reintentar.
 		return "upstream_rejected"
 	case strings.Contains(errStr, "slot full") || strings.Contains(errStr, "limit reached"):
 		return "rate_limited_local"

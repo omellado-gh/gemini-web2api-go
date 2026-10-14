@@ -6,11 +6,11 @@ import (
 	"net/http"
 )
 
-// sseWriter 把 chat.completion.chunk 按 OpenAI 规范的顺序写出去：
-// 先 delta{role} → 若干 delta{content} → delta{} + finish_reason → 可选 usage → [DONE]。
+// sseWriter escribe chat.completion.chunk en orden según especificación OpenAI:
+// primero delta{role} → varios delta{content} → delta{} + finish_reason → opcional usage → [DONE].
 //
-// header 是懒发的：第一次真要写 chunk 时才 WriteHeader(200)。这样上游在出第一个
-// 字之前就失败的话，还能退回正常的 502 JSON，而不是留给客户端半个流。
+// Las cabeceras se envían con retraso: solo WriteHeader(200) cuando se escribe el primer chunk.
+// Si falla antes del primer chunk, se puede devolver 502 JSON en lugar de dejar un stream a medias.
 type sseWriter struct {
 	w       http.ResponseWriter
 	flusher http.Flusher
@@ -27,7 +27,7 @@ func newSSEWriter(w http.ResponseWriter, id string, created int64, model string)
 
 func (s *sseWriter) Started() bool { return s.started }
 
-// start 发送 SSE 响应头和首个 delta{"role":"assistant"} chunk。幂等。
+// start envía la cabecera de respuesta SSE y el primer chunk delta{"role":"assistant"}. Idempotente.
 func (s *sseWriter) start() {
 	if s.started {
 		return
@@ -36,8 +36,8 @@ func (s *sseWriter) start() {
 	s.w.Header().Set("Content-Type", "text/event-stream")
 	s.w.Header().Set("Cache-Control", "no-cache")
 	s.w.Header().Set("Connection", "keep-alive")
-	// 关掉反代（nginx 等）对 SSE 的整体缓冲：不发这个头，客户端直连能看到流式，
-	// 但一旦经过反代就会被攒成一坨一次性下发（Dify 那种接法就是这么变非流式的）。
+	// Desactiva buffering global de proxies (nginx etc.) para SSE: con esta cabecera, conexiones directas son streaming;
+	// si pasa por proxy puede agruparse y perder streaming (caso observado con Dify).
 	s.w.Header().Set("X-Accel-Buffering", "no")
 	s.w.Header().Set("Access-Control-Allow-Origin", "*")
 	s.w.WriteHeader(200)
@@ -66,9 +66,9 @@ func (s *sseWriter) chunk(delta map[string]interface{}, finish interface{}, usag
 	}
 }
 
-// SendContent 发一段正文增量，供 streamGenerate 的 onDelta 回调直接使用。
-// SendReasoning 推思考链增量。上游先把思考链推完才开始推正文，所以客户端会
-// 先看到「思考过程」再看到答案，跟网页端的观感一致。
+// SendContent envía incremento de contenido; usado desde callback onDelta.
+// SendReasoning envía incremento de cadena de pensamiento. El upstream envía primero pensamiento, luego contenido,
+// por lo que el cliente ve "proceso de pensamiento" antes que la respuesta, igual que en web.
 func (s *sseWriter) SendReasoning(delta string) {
 	if delta == "" {
 		return
@@ -87,8 +87,8 @@ func (s *sseWriter) SendContent(delta string) {
 
 func (s *sseWriter) SendToolCalls(tcs []ToolCall) {
 	s.start()
-	// 流式 delta 里每个 tool_call 必须带 index，客户端靠它把分片的 tool_call 拼起来
-	// （OpenAI 流式规范要求）。ToolCall 结构本身没有 index，这里按顺序补上。
+	// En streaming delta, cada tool_call debe incluir index para que el cliente reconstruya fragmentos
+	// (requerido por especificación OpenAI). ToolCall no tiene index; aquí se añade secuencialmente.
 	out := make([]map[string]interface{}, len(tcs))
 	for i, tc := range tcs {
 		out[i] = map[string]interface{}{
@@ -125,8 +125,8 @@ func (s *sseWriter) Finish(reason string, usage map[string]int) {
 	}
 }
 
-// Fail 在已经开流之后出错时用：发一个带 error 的 chunk 再收尾。
-// 此时 HTTP 状态码已经是 200，改不了了。
+// Fail se usa tras iniciar stream: envía chunk con error y luego cierra.
+// En este punto el código HTTP ya es 200; no se puede cambiar.
 func (s *sseWriter) Fail(err error) {
 	s.start()
 	c := map[string]interface{}{

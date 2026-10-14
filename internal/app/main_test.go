@@ -6,10 +6,10 @@ import (
 	"testing"
 )
 
-// TestMain 把 DB 指向临时目录再跑测试。
+// TestMain apunta la DB a un directorio temporal antes de correr los tests.
 //
-// hasCookie() 现在只看 cookie 池，也就是要查 DB；不接管 cfg.DBPath 的话
-// getDB() 会去开真实的 ./data/gemini.db，测试就会读写生产数据。
+// hasCookie() ahora solo mira el pool de cookies, es decir, consulta la DB; si no se hace cargo de
+// cfg.DBPath, getDB() abriría el ./data/gemini.db real y los tests leerían y escribirían datos de producción.
 func TestMain(m *testing.M) {
 	dir, err := os.MkdirTemp("", "gw2a-test-")
 	if err != nil {
@@ -21,13 +21,13 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// withPoolCookie 往 cookie 池塞一条测试账号，用完自动删掉。
-// 取代原来的 cookieRuntime.Store —— 那条单 cookie 路径已经取消。
+// withPoolCookie mete una cuenta de prueba en el pool de cookies y la borra sola al terminar.
+// Sustituye al antiguo cookieRuntime.Store: la vía de cookie única ya se eliminó.
 func withPoolCookie(t *testing.T) {
 	t.Helper()
 	id, err := accountAdd("test", "SAPISID=dummy; SID=x", "")
 	if err != nil {
-		t.Fatalf("插测试 cookie 失败: %v", err)
+		t.Fatalf("fallo al insertar la cookie de prueba: %v", err)
 	}
 	t.Cleanup(func() { _ = accountDelete(id) })
 }

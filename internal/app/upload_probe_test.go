@@ -6,20 +6,20 @@ import (
 	"testing"
 )
 
-// 打真实上游的连通性探针，只在设了 GW2A_UPLOAD_PROBE=<代理URL> 时跑。
-// 常规 go test 会跳过 —— 上传要页面 token 和真实出口，进不了单测的封闭环境。
+// Sonda de conectividad contra el upstream real; solo se ejecuta si GW2A_UPLOAD_PROBE=<URL de proxy> está definido.
+// Un go test normal la salta: la subida necesita un token de página y una salida real, y no entra en el entorno cerrado de las pruebas unitarias.
 func TestUploadProbe(t *testing.T) {
 	proxy := os.Getenv("GW2A_UPLOAD_PROBE")
 	if proxy == "" {
-		t.Skip("未设 GW2A_UPLOAD_PROBE")
+		t.Skip("no se definió GW2A_UPLOAD_PROBE")
 	}
 	text := "PANTE-UPLOAD-PROBE\n" + strings.Repeat("这是一段用于验证上传链路的文本。\n", 50)
 	ref, err := uploadBytes("", proxy, []byte(text), "context.txt")
 	if err != nil {
-		t.Fatalf("上传失败: %v", err)
+		t.Fatalf("fallo en la subida: %v", err)
 	}
-	t.Logf("上传成功，引用路径 = %s", ref)
+	t.Logf("subida correcta, ruta de referencia = %s", ref)
 	if !strings.HasPrefix(ref, "/") {
-		t.Errorf("引用路径形状不对: %q", ref)
+		t.Errorf("la forma de la ruta de referencia es incorrecta: %q", ref)
 	}
 }

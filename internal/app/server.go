@@ -52,21 +52,20 @@ func handleOptions(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(204)
 }
 
-// buildUsage 用 tiktoken 算 token 数，跟 requests 表里记的口径保持一致。
-// responsesAPI=true 时用 /v1/responses 的字段名（input_tokens/output_tokens）。
+// buildUsage calcula el número de tokens con tiktoken, con el mismo criterio que se registra en la tabla requests.
+// Con responsesAPI=true usa los nombres de campo de /v1/responses (input_tokens/output_tokens).
 func buildUsage(prompt, text string, responsesAPI bool) map[string]int {
 	return buildUsageWithReasoning(prompt, text, "", responsesAPI)
 }
 
-// buildUsageWithReasoning 在 usage 里单列思考链的 token 数。
+// buildUsageWithReasoning lista aparte en usage el número de tokens de la cadena de pensamiento.
 //
-// 思考链**不计入** completion_tokens：它是模型自己的推理过程，客户端默认不展示，
-// 算进去等于让用户为看不见的输出买单（下游 newapi 是按 completion_tokens 计费的）。
-// 单列在 completion_tokens_details.reasoning_tokens 里，跟 OpenAI 的做法一致，
-// 想计费的人自己加。
+// La cadena de pensamiento **no cuenta** en completion_tokens: es el proceso de razonamiento del propio modelo, que el cliente no muestra por defecto;
+// contarla equivale a hacer que el usuario pague por una salida que no ve (el newapi de aguas abajo factura según completion_tokens).
+// Se lista aparte en completion_tokens_details.reasoning_tokens, igual que hace OpenAI; quien quiera facturarla la suma por su cuenta.
 func buildUsageWithReasoning(prompt, text, reasoning string, responsesAPI bool) map[string]int {
-	// 媒体产物是 base64 data URL，上百万字符。不计进 output token：那是二进制内容，
-	// 按 token 计费等于让用户为看不见的字节买单，下游 newapi 按 output token 收钱。
+	// Los productos multimedia son data URL en base64, de millones de caracteres. No se cuentan en output token: son contenido binario,
+	// y facturarlos por token equivale a hacer que el usuario pague por bytes que no ve; el newapi de aguas abajo cobra por output token.
 	in, out := countTokens(prompt), countTokens(stripDataURLs(text))
 	if responsesAPI {
 		return map[string]int{
@@ -86,11 +85,11 @@ func buildUsageWithReasoning(prompt, text, reasoning string, responsesAPI bool) 
 	return u
 }
 
-// rejectUnsupported 检查客户端传了但我们兑现不了的字段。
+// rejectUnsupported comprueba campos que el cliente envía pero que no podemos cumplir.
 //
-// 只拦"静默忽略会让客户端拿到错误结果"的：n>1 少给候选、图片输入被丢掉会
-// 让模型答非所问。采样类参数（temperature/top_p/max_tokens/...）上游根本
-// 没有对应旋钮，收下忽略即可，报错反而会挡住正常客户端。
+// Solo se bloquean aquellos cuya "ignorancia silenciosa daría al cliente un resultado erróneo": con n>1 se devuelven menos candidatos, y descartar la entrada de imagen haría
+// que el modelo responda a otra cosa. Los parámetros de muestreo (temperature/top_p/max_tokens/...) no tienen ningún mando correspondiente en el upstream,
+// así que basta con aceptarlos e ignorarlos; devolver error bloquearía a clientes normales.
 func rejectUnsupported(req map[string]interface{}, messages []map[string]interface{}) error {
 	if n, ok := req["n"].(float64); ok && n > 1 {
 		return fmt.Errorf("n=%d not supported: upstream returns a single candidate", int(n))
@@ -107,15 +106,15 @@ func rejectUnsupported(req map[string]interface{}, messages []map[string]interfa
 			}
 			switch getStr(cm, "type") {
 			case "image_url", "input_image":
-				// 有 cookie 就能收：图会被上传成附件再引用。匿名不行 —— 传得上去，
-				// 但一引用就被服务端拒，收下只会让客户端拿到一个看不懂的失败。
+				// Con cookie sí se acepta: la imagen se sube como adjunto y luego se referencia. Anónimo no —— se puede subir,
+				// pero en cuanto se referencia el servidor lo rechaza, y aceptarlo solo daría al cliente un fallo incomprensible.
 				if !hasCookie() {
 					return fmt.Errorf("image input needs a Google account cookie: anonymous " +
 						"uploads succeed but referencing them in a conversation is rejected " +
 						"upstream. Add a cookie in the admin panel (Cookie pool)")
 				}
 			case "video_url", "input_video":
-				// 视频跟图片同理：登录态才能引用，匿名一引用就 1100。
+				// El vídeo es igual que la imagen: solo con sesión iniciada se puede referenciar; anónimo da 1100 en cuanto se referencia.
 				if !hasCookie() {
 					return fmt.Errorf("video input needs a Google account cookie: anonymous " +
 						"uploads succeed but referencing them in a conversation is rejected " +
@@ -182,8 +181,8 @@ func callGemini(prompt, latest string, mc ModelConfig, tools []map[string]interf
 // Privacy: the prompt/response strings themselves are never persisted —
 // only their length, model name, latency, status, and proxy info.
 func recordRequest(endpoint, model, prompt, response string, res *StreamResult, status int, errStr string, stream bool) {
-	// 媒体产物是超长 base64，剥掉再算 token/长度：既不让它污染统计，也免得在请求线程里
-	// 对上百万字符跑 tiktoken 白白拖慢。
+	// Los productos multimedia son base64 larguísimos; se quitan antes de calcular tokens/longitud: así no contaminan las estadísticas y se evita
+	// ejecutar tiktoken sobre millones de caracteres en el hilo de la petición, ralentizándolo en vano.
 	response = stripDataURLs(response)
 	r := &RequestRow{
 		TS:            time.Now().Unix(),
@@ -259,7 +258,7 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 图片先解出来带着，真正上传要等挑完账号和出口（见 streamGenerate）。
+	// Las imágenes se extraen y se llevan; la subida real espera a elegir cuenta y salida (véase streamGenerate).
 	images, err := collectImages(messages, "")
 	if err != nil {
 		writeJSON(w, 400, map[string]interface{}{"error": map[string]string{
@@ -390,7 +389,7 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// usageOf 是 buildUsageWithReasoning 的便捷包装，res 可能为 nil。
+// usageOf es un envoltorio cómodo de buildUsageWithReasoning; res puede ser nil.
 func usageOf(prompt, text string, res *StreamResult) map[string]int {
 	r := ""
 	if res != nil {
@@ -399,8 +398,8 @@ func usageOf(prompt, text string, res *StreamResult) map[string]int {
 	return buildUsageWithReasoning(prompt, text, r, false)
 }
 
-// remainingText 返回最终文本里还没通过 onDelta 发出去的部分。
-// 真流式下通常只剩末尾一点或为空；没走真流式时 Emitted 为空，返回全文。
+// remainingText devuelve la parte del texto final que aún no se ha enviado por onDelta.
+// Con streaming real normalmente solo queda un poco del final o nada; sin streaming real, Emitted está vacío y se devuelve el texto completo.
 func remainingText(text string, res *StreamResult) string {
 	if res == nil {
 		return text
@@ -429,7 +428,7 @@ func remainingOf(full, emitted string) string {
 	if strings.HasPrefix(full, emitted) {
 		return full[len(emitted):]
 	}
-	// 前缀对不上（上游中途改写过），已发的收不回，不再补发以免重复。
+	// El prefijo no cuadra (el upstream lo reescribió a mitad); lo ya enviado no se puede retirar y no se reenvía para evitar duplicados.
 	return ""
 }
 
@@ -679,8 +678,8 @@ func handleResponses(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if ptl, ok := err.(*PromptTooLongError); ok {
-			// 明确报 400 而不是发出去让上游把用户的问题截掉 —— 那样客户端拿到的是
-			// 一个答非所问的 200，根本看不出请求其实没送到。
+			// Se da 400 explícitamente en vez de dejar que el upstream recorte la pregunta del usuario —— así el cliente recibiría
+			// un 200 que responde a otra cosa y no podría ver que la petición no se envió.
 			writeJSON(w, 400, map[string]interface{}{"error": map[string]string{
 				"message": ptl.Error(), "type": "invalid_request_error",
 				"code": "context_length_exceeded"}})

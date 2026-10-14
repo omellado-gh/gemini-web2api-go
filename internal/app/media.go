@@ -15,19 +15,23 @@ import (
 	fhttp "github.com/bogdanfinn/fhttp"
 )
 
-// inner[49] 媒体工具开关：填了服务端就换后端模型生成产物。
+// inner[49] interruptor de herramientas multimedia: si se rellena, el servidor cambia a
+// un modelo de backend para generar el producto.
 const (
-	toolImage  = 14 // 生图 → Nano Banana
-	toolMusic  = 21 // 音乐 → Lyria（约 30 秒）
-	toolCanvas = 2  // 画布 → immersive HTML 文档（内联在响应里，不用另下载）
-	toolVideo  = 11 // 视频 → Veo（异步：提交后 MUAZcd 轮询到完成，再 hNvQHb 拿下载链）
+	toolImage  = 14 // imagen → Nano Banana
+	toolMusic  = 21 // música → Lyria (unos 30 segundos)
+	toolCanvas = 2  // lienzo → documento HTML immersive (en línea en la respuesta, sin descarga aparte)
+	toolVideo  = 11 // vídeo → Veo (asíncrono: tras enviar, MUAZcd sondea hasta terminar y luego hNvQHb obtiene el enlace de descarga)
 )
 
-// extractCanvasDoc 从 canvas（inner[49]=2）响应里抠出生成的 HTML 文档。
+// extractCanvasDoc extrae el documento HTML generado de la respuesta de canvas
+// (inner[49]=2).
 //
-// 跟图/乐不同：文档不用另外下载，直接内联在帧里——immersive 结构
-// （inner[4][0][30]… 那条）里有个形如 "```html\n<!DOCTYPE html>…```" 的字符串。
-// 流式时同一份文档在多帧里累积重发，取所有帧里含 DOCTYPE 的**最长**字符串 = 最终完整版。
+// A diferencia de imagen/música, el documento no se descarga aparte: viene en línea en
+// los frames — la estructura immersive (la entrada inner[4][0][30]…) contiene una cadena
+// con la forma "```html\n<!DOCTYPE html>…```". En streaming, el mismo documento se
+// reenvía acumulado en varios frames; se toma la cadena **más larga** que contenga
+// DOCTYPE entre todos los frames = la versión final completa.
 func extractCanvasDoc(raw string) string {
 	best := ""
 	var walk func(interface{})
@@ -74,27 +78,35 @@ func extractCanvasDoc(raw string) string {
 	return best
 }
 
-// downloadOPI 是产物下载 URL（contribution 那条）必带的 opi 参数。取自 /app 页面，
-// 实测两个独立账号都是这个值，当全局常量用。图片走 lh3 CDN 那条不需要它。
+// downloadOPI es el parámetro opi obligatorio de la URL de descarga de productos (la de
+// contribution). Se toma de la página /app; en las pruebas dos cuentas independientes
+// daban este valor, así que se usa como constante global. La ruta de imagen por el CDN
+// lh3 no lo necesita.
 const downloadOPI = "103135050"
 
-// MediaArtifact 是一份生成好的媒体产物的原始字节。
+// MediaArtifact son los bytes en bruto de un producto multimedia ya generado.
 type MediaArtifact struct {
 	Mime string
 	Data []byte
 }
 
-// downloadCookieNames 是产物下载 host 认的 cookie 白名单 —— 浏览器发给它的就这 18 项，
-// 全是 .google.com 域作用域的。
+// downloadCookieNames es la lista blanca de cookies que reconoce el host de descarga de
+// productos — el navegador solo le envía estas 18, todas con ámbito de dominio
+// .google.com.
 //
-// 关键：把 gemini/accounts 主机专属的 cookie（__Host-1PLSID / __Host-GAPS / LSID /
-// OSID / OTZ / COMPASS / _ga* 等）一起塞过去，下载 host 的鉴权会直接 403、回一个 gzip
-// 的空错误页。实测只发这 18 项才 200。这是 media 下载 403 的根因之一，跟 token 新鲜度 /
-// TLS 指纹 / opi / 各种 header 都无关。
+// Clave: si se le pasan también cookies exclusivas del host gemini/accounts
+// (__Host-1PLSID / __Host-GAPS / LSID / OSID / OTZ / COMPASS / _ga* etc.), la
+// autenticación del host de descarga devuelve directamente 403 y una página de error
+// vacía comprimida con gzip. En las pruebas, solo enviando estas 18 daba 200. Es una de
+// las causas raíz del 403 en las descargas de media, ajena a la frescura del token / la
+// huella TLS / el opi / los distintos headers.
 //
-// 另一个根因是跨域重定向：图片链（lh3.googleusercontent.com/gg-dl/…）会 302 到
-// work.fife.usercontent.google.com/rd-gg-dl/…，而 http 客户端默认不把 Cookie 头带到
-// 新域，于是重定向目标拿不到 cookie 照样 403。靠 mediaGetFollow 每跳重发 cookie 解决。
+// Otra causa raíz es la redirección entre dominios: la cadena de imagen
+// (lh3.googleusercontent.com/gg-dl/…) hace 302 a
+// work.fife.usercontent.google.com/rd-gg-dl/…, y el cliente http, por seguridad, no lleva
+// la cabecera Cookie al nuevo dominio por defecto, así que el destino de la redirección
+// se queda sin cookie y también da 403. Se resuelve reenviando la cookie en cada salto con
+// mediaGetFollow.
 var downloadCookieNames = map[string]bool{
 	"HSID": true, "SSID": true, "APISID": true, "SAPISID": true,
 	"__Secure-1PAPISID": true, "__Secure-3PAPISID": true,
@@ -105,7 +117,8 @@ var downloadCookieNames = map[string]bool{
 	"SIDCC": true, "__Secure-1PSIDCC": true, "__Secure-3PSIDCC": true,
 }
 
-// filterDownloadCookies 只留下载 host 认的那 18 项，别的一律不发。
+// filterDownloadCookies deja solo las 18 que reconoce el host de descarga y no envía
+// ninguna otra.
 func filterDownloadCookies(cookie string) string {
 	var kept []string
 	for _, p := range strings.Split(cookie, ";") {
@@ -121,27 +134,33 @@ func filterDownloadCookies(cookie string) string {
 	return strings.Join(kept, "; ")
 }
 
-// fetchMediaArtifacts 取回媒体产物字节。cookie / sapisid / xsrf / proxyURL 必须跟生成
-// 那次同一套 —— 产物挂在这个会话/这个出口上，换出口/换号都取不到。
+// fetchMediaArtifacts recupera los bytes del producto multimedia. cookie / sapisid /
+// xsrf / proxyURL deben ser los mismos que en la generación — el producto está atado a
+// esta sesión / esta salida, y no se puede recuperar cambiando de salida o de cuenta.
 //
-// 图片和音乐取回路径不同：图片走 lh3 CDN（链在 StreamGenerate 响应里，302 跟随），
-// 音乐/视频走 contribution.usercontent.google.com/download（链在 hNvQHb 历史里，单次
-// 200）。按 tool 分流。
+// La ruta de recuperación difiere entre imagen y música: la imagen va por el CDN lh3 (el
+// enlace está en la respuesta de StreamGenerate y se sigue el 302), mientras que la
+// música/vídeo va por contribution.usercontent.google.com/download (el enlace está en el
+// historial de hNvQHb y responde 200 en una sola llamada). Se separa por tool.
 func fetchMediaArtifacts(tool int, raw, cid, cookie, sapisid, xsrf, proxyURL, defaultMime string) ([]MediaArtifact, error) {
 	if tool == toolImage {
 		return fetchImageArtifacts(raw, cid, cookie, sapisid, xsrf, proxyURL, defaultMime)
 	}
-	// 音乐几乎立刻就绪，视频要生成几十秒到几分钟，所以视频轮询给足预算。
+	// La música está lista casi al instante; el vídeo tarda de decenas de segundos a
+	// varios minutos, así que al sondeo de vídeo se le concede presupuesto de sobra.
 	maxPolls, interval := 6, 2*time.Second
 	if tool == toolVideo {
-		maxPolls, interval = 45, 8*time.Second // 约 6 分钟
+		maxPolls, interval = 45, 8*time.Second // unos 6 minutos
 	}
 	arts, err := fetchDownloadArtifacts(cid, cookie, sapisid, xsrf, proxyURL, defaultMime, maxPolls, interval)
 	if err != nil {
 		return arts, err
 	}
-	// 视频一次请求 hNvQHb 里会挂多份下载链（疑似 Veo 的多候选/多档编码，含义未严谨证明），
-	// 只留最大的那份，免得客户端一次拿到两个视频。要区分含义得有干净出口再验（见 CLAUDE.md）。
+	// En una sola petición a hNvQHb, el vídeo puede traer varios enlaces de descarga
+	// (¿candidatos múltiples o varios perfiles de codificación de Veo? el significado no
+	// está demostrado con rigor), así que solo se conserva el mayor para que el cliente no
+	// reciba dos vídeos de golpe. Para distinguir su significado haría falta verificar con
+	// una salida limpia (ver CLAUDE.md).
 	if tool == toolVideo && len(arts) > 1 {
 		largest := arts[0]
 		for _, a := range arts[1:] {
@@ -154,8 +173,9 @@ func fetchMediaArtifacts(tool int, raw, cid, cookie, sapisid, xsrf, proxyURL, de
 	return arts, nil
 }
 
-// fetchImageArtifacts 取回生成的图片。链在 StreamGenerate 响应里就有，抠不到再退回轮询
-// hNvQHb。下载走 mediaGetFollow（跟随 302 并每跳重发 cookie）。
+// fetchImageArtifacts recupera las imágenes generadas. El enlace ya viene en la respuesta
+// de StreamGenerate; si no se consigue, se recurre a sondear hNvQHb. La descarga pasa por
+// mediaGetFollow (sigue los 302 y reenvía la cookie en cada salto).
 func fetchImageArtifacts(raw, cid, cookie, sapisid, xsrf, proxyURL, defaultMime string) ([]MediaArtifact, error) {
 	urls := collectImageURLs(raw)
 	if len(urls) == 0 {
@@ -170,7 +190,7 @@ func fetchImageArtifacts(raw, cid, cookie, sapisid, xsrf, proxyURL, defaultMime 
 		}
 	}
 	if len(urls) == 0 {
-		return nil, fmt.Errorf("响应里没有图片 CDN 链接")
+		return nil, fmt.Errorf("la respuesta no trae enlaces de CDN de imagen")
 	}
 	var arts []MediaArtifact
 	for _, u := range urls {
@@ -178,8 +198,9 @@ func fetchImageArtifacts(raw, cid, cookie, sapisid, xsrf, proxyURL, defaultMime 
 		if err != nil {
 			return arts, err
 		}
-		// 同一张图在响应里可能以不同 token 出现（不同分辨率/缩略图），按字节去重，
-		// 免得客户端拿到几张一模一样的图。
+		// La misma imagen puede aparecer con tokens distintos (distintas resoluciones /
+		// miniaturas); se deduplica por bytes para que el cliente no reciba varias copias
+		// idénticas.
 		if !artifactSeen(arts, data) {
 			arts = append(arts, MediaArtifact{Mime: mime, Data: data})
 		}
@@ -187,13 +208,16 @@ func fetchImageArtifacts(raw, cid, cookie, sapisid, xsrf, proxyURL, defaultMime 
 	return arts, nil
 }
 
-// imageFullResURL 给图片 CDN 链加尺寸参数取原图。plain gg-dl 默认下来是 ~500px 的缩略图
-// （issue #14：控制台里是 1365×768，链尾 =s1024-rj 改 =s2048-rj 更大）。googleusercontent
-// 惯例是在链尾加 =sN 指定最大边、=s0 取原始尺寸。这里用 =s0 取全分辨率、且不改格式
-// （-rj 会强制 jpeg，我们要保持 PNG）。
+// imageFullResURL añade el parámetro de tamaño a la cadena del CDN de imagen para obtener
+// el original. Un gg-dl sin más devuelve por defecto una miniatura de ~500px (issue #14:
+// en la consola era 1365×768; cambiar el final =s1024-rj por =s2048-rj da más). La
+// convención de googleusercontent es añadir =sN al final para fijar el lado mayor y =s0
+// para el tamaño original. Aquí se usa =s0 para obtener la resolución completa, y sin
+// cambiar el formato (-rj fuerza jpeg, y queremos conservar PNG).
 //
-// 选项在最后一个路径段里、以 = 分隔；gg-dl token 是 base64url 不含 =，所以按最后一个
-// 路径段里的 = 切，去掉已有选项再加 =s0。
+// Las opciones van en el último segmento de ruta, separadas por =; el token de gg-dl es
+// base64url y no contiene =, así que se corta por el = del último segmento de ruta, se
+// eliminan las opciones existentes y se añade =s0.
 func imageFullResURL(u string) string {
 	i := strings.LastIndexByte(u, '/')
 	if i < 0 {
@@ -206,12 +230,13 @@ func imageFullResURL(u string) string {
 	return u + "=s0"
 }
 
-// fetchDownloadArtifacts 取回音乐/视频：轮询 hNvQHb 等到 response_data 下载链，再下。
-// gg-dl（lh3）和 temp_data 那两种链是预览用的，只有 response_data 那条能下到真字节。
+// fetchDownloadArtifacts recupera música/vídeo: sondea hNvQHb hasta obtener el enlace de
+// descarga response_data y luego descarga. Los enlaces gg-dl (lh3) y temp_data son para
+// vista previa; solo el de response_data permite descargar los bytes reales.
 func fetchDownloadArtifacts(cid, cookie, sapisid, xsrf, proxyURL, defaultMime string,
 	maxPolls int, interval time.Duration) ([]MediaArtifact, error) {
 	if cid == "" {
-		return nil, fmt.Errorf("没拿到会话 id，无法定位产物")
+		return nil, fmt.Errorf("no se obtuvo el id de sesión; no se puede localizar el producto")
 	}
 	var dlURLs []string
 	for i := 0; i < maxPolls; i++ {
@@ -220,19 +245,20 @@ func fetchDownloadArtifacts(cid, cookie, sapisid, xsrf, proxyURL, defaultMime st
 				dlURLs = picked
 				break
 			}
-			// 视频被内容政策拒时 hNvQHb 里是「I can't generate that video」，别干等到超时。
+			// Cuando la política de contenido rechaza el vídeo, en hNvQHb aparece «I can't
+			// generate that video»; no hay que esperar en vano hasta el timeout.
 			if strings.Contains(body, "can't generate that video") {
-				return nil, fmt.Errorf("视频被内容政策拒绝（换个 prompt 再试）")
+				return nil, fmt.Errorf("el vídeo fue rechazado por la política de contenido (prueba con otro prompt)")
 			}
 		}
 		time.Sleep(interval)
 	}
 	if len(dlURLs) == 0 {
-		return nil, fmt.Errorf("hNvQHb 里没等到可下载的产物链接（response_data）")
+		return nil, fmt.Errorf("hNvQHb no devolvió ningún enlace de producto descargable (response_data)")
 	}
 	var arts []MediaArtifact
 	for _, u := range dlURLs {
-		// contribution 那条要补 filename / opi。
+		// Al enlace de contribution hay que añadirle filename / opi.
 		if !strings.Contains(u, "opi=") {
 			sep := "?"
 			if strings.Contains(u, "?") {
@@ -251,7 +277,8 @@ func fetchDownloadArtifacts(cid, cookie, sapisid, xsrf, proxyURL, defaultMime st
 	return arts, nil
 }
 
-// pollHistoryRaw 调一次 hNvQHb 取会话历史，返回原始响应体。
+// pollHistoryRaw llama una vez a hNvQHb para obtener el historial de la conversación y
+// devuelve el cuerpo de respuesta en bruto.
 func pollHistoryRaw(cid, cookie, sapisid, xsrf, proxyURL string) (string, error) {
 	inner, _ := json.Marshal([]interface{}{cid, 10, nil, 1, []interface{}{0}, []interface{}{4}, nil, 1})
 	freq, _ := json.Marshal([]interface{}{[]interface{}{[]interface{}{"hNvQHb", string(inner), nil, "generic"}}})
@@ -265,7 +292,8 @@ func pollHistoryRaw(cid, cookie, sapisid, xsrf, proxyURL string) (string, error)
 		"https://gemini.google.com/_/BardChatUi/data/batchexecute?rpcids=hNvQHb&bl=%s&hl=en&_reqid=%d&rt=c",
 		currentBL(proxyURL), reqid)
 
-	// batchexecute 不带模型 header，其余（cookie / SAPISIDHASH / x-same-domain）跟主请求同款。
+	// batchexecute no lleva la cabecera de modelo; el resto (cookie / SAPISIDHASH /
+	// x-same-domain) es igual que en la petición principal.
 	headers := buildGeminiHeaders(cookie, sapisid, "")
 	delete(headers, "x-goog-ext-525001261-jspb")
 
@@ -279,12 +307,16 @@ func pollHistoryRaw(cid, cookie, sapisid, xsrf, proxyURL string) (string, error)
 	return string(body), nil
 }
 
-// deleteConversation 删掉 gemini.google.com 上留下的一条会话（#19）。
+// deleteConversation elimina una conversación que queda en gemini.google.com (#19).
 //
-// 协议逐字取自抓包：rpc GzXR5e，参数 ["<cid>"]，mode "generic"，带 at=XSRF。
-//   f.req=[[["GzXR5e","[\"c_xxx\"]",null,"generic"]]]&at=<xsrf>
-// 只登录态可用（匿名没有 XSRF、会话也没落到账号里）。best-effort：删失败只记日志，
-// 不影响已经返给客户端的响应。
+// El protocolo se toma literalmente de una captura: rpc GzXR5e, parámetro ["<cid>"],
+// mode "generic", con at=XSRF.
+//
+//	f.req=[[["GzXR5e","[\"c_xxx\"]",null,"generic"]]]&at=<xsrf>
+//
+// Solo funciona con sesión iniciada (el anónimo no tiene XSRF y la conversación tampoco
+// queda en la cuenta). Best-effort: si falla el borrado solo se registra en el log y no
+// afecta a la respuesta ya devuelta al cliente.
 func deleteConversation(cid, cookie, sapisid, xsrf, proxyURL string) {
 	inner, _ := json.Marshal([]interface{}{cid})
 	freq, _ := json.Marshal([]interface{}{[]interface{}{[]interface{}{"GzXR5e", string(inner), nil, "generic"}}})
@@ -299,22 +331,26 @@ func deleteConversation(cid, cookie, sapisid, xsrf, proxyURL string) {
 	delete(headers, "x-goog-ext-525001261-jspb")
 	status, _, body, err := uploadPost(endpoint, headers, []byte(form.Encode()), proxyURL)
 	if err != nil {
-		logf("[autodel] 删会话 %s 失败: %v", cid, err)
+		logf("[autodel] fallo al borrar la conversación %s: %v", cid, err)
 		return
 	}
 	if status != 200 {
-		logf("[autodel] 删会话 %s 返回 HTTP %d: %s", cid, status, truncate(string(body), 120))
+		logf("[autodel] al borrar la conversación %s se recibió HTTP %d: %s", cid, status, truncate(string(body), 120))
 		return
 	}
-	logf("[autodel] 已删会话 %s", cid)
+	logf("[autodel] conversación %s borrada", cid)
 }
 
-// walkFramesForURLs 递归遍历 batchexecute 信封里所有字符串，返回 want 命中的那些（去重保序）。
+// walkFramesForURLs recorre recursivamente todas las cadenas del sobre de batchexecute y
+// devuelve las que cumplan want (sin duplicados y conservando el orden).
 //
-// 响应结构：每行 [["wrb.fr","<rpc>","<json 字符串>",…]，真正的数据埋在那个内层 json
-// 字符串里，深度不定。必须走 JSON 解析而不是对 raw 直接正则 —— raw 是**双层转义** JSON，
-// URL 里的斜杠/边界在 raw 里跟解出来的不一样，正则会多抓或少抓几个字符，拼出来的 URL
-// 就废了（实测正则抠的比真 URL 长 2 个字符，下载直接 400）。
+// Estructura de la respuesta: cada línea es [["wrb.fr","<rpc>","<cadena json>",…], y los
+// datos reales están enterrados en esa cadena json interna, a profundidad variable. Hay
+// que pasar por un parseo JSON, no aplicar regex directamente sobre raw — raw es JSON con
+// **doble escape**, y las barras/los límites de las URL no son iguales en raw que una vez
+// desescapados: la regex capturaría unos caracteres de más o de menos y la URL resultante
+// quedaría inservible (en las pruebas, lo extraído con regex salía 2 caracteres más largo
+// que la URL real y la descarga daba 400 directamente).
 func walkFramesForURLs(raw string, want func(string) bool) []string {
 	seen := map[string]bool{}
 	var out []string
@@ -363,16 +399,19 @@ func walkFramesForURLs(raw string, want func(string) bool) []string {
 	return out
 }
 
-// collectDownloadURLs 从响应里挖出所有 contribution 下载链（音乐/视频用）。
+// collectDownloadURLs extrae de la respuesta todos los enlaces de descarga contribution
+// (para música/vídeo).
 func collectDownloadURLs(raw string) []string {
 	return walkFramesForURLs(raw, func(s string) bool {
 		return strings.Contains(s, "contribution.usercontent.google.com/download")
 	})
 }
 
-// collectImageURLs 从响应里挖出所有生成图片的 CDN 链（gg-dl 来自首帧、gg 来自 hNvQHb）。
-// 这条 plain 链直接 GET 就回真图 —— 不要加 rd- 前缀（抓包里那个 rd- 是**另一套 token**，
-// 拿本链的 token 拼 rd- 会 400）。
+// collectImageURLs extrae de la respuesta todos los enlaces de CDN de las imágenes
+// generadas (gg-dl viene del primer frame, gg de hNvQHb).
+// Este enlace sin más devuelve la imagen real con un GET directo — no hay que añadirle el
+// prefijo rd- (el rd- de la captura es **otro juego de tokens**; montar rd- con el token
+// de este enlace da 400).
 func collectImageURLs(raw string) []string {
 	return walkFramesForURLs(raw, func(s string) bool {
 		return strings.Contains(s, "lh3.googleusercontent.com/gg-dl/") ||
@@ -380,8 +419,10 @@ func collectImageURLs(raw string) []string {
 	})
 }
 
-// pickResponseDataURLs 从一堆下载链里挑真正能下的那种（c 参数解出来含 "response_data"）。
-// 另外两种（temp_data 预览、gg-dl）下下来是 403，得排除。
+// pickResponseDataURLs elige de entre varios enlaces de descarga el que realmente permite
+// descargar (al decodificar el parámetro c contiene "response_data").
+// Los otros dos (temp_data de vista previa y gg-dl) dan 403 al descargar y hay que
+// excluirlos.
 func pickResponseDataURLs(urls []string) []string {
 	var out []string
 	for _, u := range urls {
@@ -392,8 +433,10 @@ func pickResponseDataURLs(urls []string) []string {
 	return out
 }
 
-// downloadIsResponseData 解 c 参数的 base64，看 protobuf 里有没有 "response_data" 标记。
-// 不用裸字符串匹配 base64 片段：那个受对齐影响，换个前缀就漏。
+// downloadIsResponseData decodifica el base64 del parámetro c para ver si el protobuf
+// contiene la marca "response_data".
+// No se hace coincidencia de cadena directamente sobre el fragmento base64: eso depende
+// del alineamiento y con otro prefijo se escapa.
 func downloadIsResponseData(rawURL string) bool {
 	u, err := url.Parse(rawURL)
 	if err != nil {
@@ -413,8 +456,10 @@ func downloadIsResponseData(rawURL string) bool {
 	return strings.Contains(string(dec), "response_data")
 }
 
-// downloadBytes GET 一条产物链，跟随重定向并每跳重发 cookie 子集，返回 content-type
-// 和原始字节。图片链（会 302）和 contribution 链（单次 200）都走这个。
+// downloadBytes hace un GET de un enlace de producto, sigue las redirecciones y reenvía el
+// subconjunto de cookies en cada salto, y devuelve el content-type y los bytes en bruto.
+// Tanto la cadena de imagen (que da 302) como la de contribution (200 en una sola llamada)
+// pasan por aquí.
 func downloadBytes(rawURL, cookie, proxyURL, defaultMime string) (string, []byte, error) {
 	headers := map[string]string{
 		"Cookie":  filterDownloadCookies(cookie),
@@ -427,7 +472,7 @@ func downloadBytes(rawURL, cookie, proxyURL, defaultMime string) (string, []byte
 		return "", nil, err
 	}
 	if status != 200 {
-		return "", nil, fmt.Errorf("下载产物 HTTP %d（%d 字节）", status, len(body))
+		return "", nil, fmt.Errorf("descarga del producto HTTP %d (%d bytes)", status, len(body))
 	}
 	mime := respHead["content-type"]
 	if i := strings.IndexByte(mime, ';'); i >= 0 {
@@ -439,11 +484,15 @@ func downloadBytes(rawURL, cookie, proxyURL, defaultMime string) (string, []byte
 	return mime, body, nil
 }
 
-// mediaGetFollow 手动跟随重定向（最多 6 跳），每跳都把同一套 header（含 Cookie）重发。
+// mediaGetFollow sigue las redirecciones manualmente (hasta 6 saltos) y reenvía el mismo
+// juego de cabeceras (con Cookie) en cada salto.
 //
-// 为什么不用客户端自带的跟随：图片链会跨域 302（lh3 → work.fife.usercontent.google.com），
-// http 客户端出于安全默认不把 Cookie 头带到新域，于是重定向目标拿不到 cookie 就 403。
-// 手动跟随、每跳重发 cookie 才能过。两个 client 本来也都配了「不自动跟随」。
+// Por qué no usar el seguimiento automático del cliente: la cadena de imagen hace un 302
+// entre dominios (lh3 → work.fife.usercontent.google.com), y el cliente http, por
+// seguridad, no lleva la cabecera Cookie al nuevo dominio por defecto, así que el destino
+// de la redirección se queda sin cookie y da 403. Solo se pasa siguiendo manualmente y
+// reenviando la cookie en cada salto. Además, ambos client están configurados para «no
+// seguir automáticamente».
 func mediaGetFollow(rawURL string, headers map[string]string, proxyURL string) (int, map[string]string, []byte, error) {
 	cur := rawURL
 	for hop := 0; hop < 6; hop++ {
@@ -465,10 +514,11 @@ func mediaGetFollow(rawURL string, headers map[string]string, proxyURL string) (
 		}
 		return status, respHead, body, nil
 	}
-	return 0, nil, nil, fmt.Errorf("下载重定向次数过多")
+	return 0, nil, nil, fmt.Errorf("demasiadas redirecciones de descarga")
 }
 
-// resolveRef 按当前 URL 解析 Location（多数是绝对地址，也兼容相对）。
+// resolveRef resuelve el Location respecto a la URL actual (normalmente es una dirección
+// absoluta, pero también admite relativa).
 func resolveRef(base, ref string) (string, error) {
 	b, err := url.Parse(base)
 	if err != nil {
@@ -481,8 +531,10 @@ func resolveRef(base, ref string) (string, error) {
 	return b.ResolveReference(r).String(), nil
 }
 
-// mediaGetOnce 发一次 GET，不跟随重定向，响应头一起带回（要取 content-type / location）。
-// 有代理走 stdlib，没代理走 tls-client，跟 doGeminiRequest / uploadPost 一个规矩。
+// mediaGetOnce lanza un GET sin seguir redirecciones y devuelve también las cabeceras de
+// respuesta (hay que leer content-type / location).
+// Con proxy usa stdlib; sin proxy usa tls-client, con la misma norma que doGeminiRequest /
+// uploadPost.
 func mediaGetOnce(rawURL string, headers map[string]string, proxyURL string) (int, map[string]string, []byte, error) {
 	if proxyURL != "" {
 		req, err := http.NewRequest("GET", rawURL, nil)
@@ -533,8 +585,10 @@ func flattenFHeaders(h fhttp.Header) map[string]string {
 	return m
 }
 
-// extractConversationID 从 StreamGenerate 响应里取会话 id（帧的 [1][0]）。
-// 取回音乐/视频产物要用它去 hNvQHb 拿这次生成的历史。
+// extractConversationID obtiene el id de sesión de la respuesta de StreamGenerate (el
+// [1][0] del frame).
+// Se necesita para recuperar los productos de música/vídeo consultando en hNvQHb el
+// historial de esta generación.
 func extractConversationID(raw string) string {
 	for _, line := range strings.Split(raw, "\n") {
 		line = strings.TrimSpace(line)
@@ -569,7 +623,8 @@ func extractConversationID(raw string) string {
 	return ""
 }
 
-// artifactSeen 判断这份字节是不是已经收过（按内容比，收掉同图不同 token 的重复）。
+// artifactSeen indica si estos bytes ya se habían recibido (comparación por contenido,
+// descarta duplicados de la misma imagen con distinto token).
 func artifactSeen(arts []MediaArtifact, data []byte) bool {
 	for _, a := range arts {
 		if bytes.Equal(a.Data, data) {
@@ -579,8 +634,10 @@ func artifactSeen(arts []MediaArtifact, data []byte) bool {
 	return false
 }
 
-// appendArtifactMarkdown 把产物字节转成 base64 data URL 追加到正文后面。
-// 图片用 markdown 图片语法（多数聊天 UI 能直接渲染），其余（音频）用链接语法。
+// appendArtifactMarkdown convierte los bytes del producto en una data URL base64 y la
+// añade al final del cuerpo.
+// Las imágenes usan la sintaxis Markdown de imagen (la mayoría de UI de chat las renderiza
+// directamente); el resto (audio) usa la sintaxis de enlace.
 func appendArtifactMarkdown(text string, arts []MediaArtifact) string {
 	var b strings.Builder
 	b.WriteString(text)
@@ -598,12 +655,14 @@ func appendArtifactMarkdown(text string, arts []MediaArtifact) string {
 	return b.String()
 }
 
-// dataURLRe 匹配一整条 base64 data URL。
+// dataURLRe reconoce una data URL base64 completa.
 var dataURLRe = regexp.MustCompile(`data:([-\w.+/]+);base64,[A-Za-z0-9+/=]+`)
 
-// stripDataURLs 把 base64 data URL 从文本里抠掉，只留个短占位。
-// 算 token / 记长度时用 —— 一张图 base64 上百万字符，按它计费等于让用户为看不见的
-// 二进制买单，下游 newapi 是按 output token 收钱的。产物本身照常在 content 里返回。
+// stripDataURLs elimina las data URL base64 del texto y deja solo un marcador corto.
+// Se usa al contar tokens / medir longitud — una imagen en base64 ocupa millones de
+// caracteres y cobrarla equivaldría a que el usuario pagara por binario que no ve; el
+// newapi de aguas abajo cobra por output token. El producto en sí se devuelve como siempre
+// dentro de content.
 func stripDataURLs(text string) string {
 	return dataURLRe.ReplaceAllString(text, "data:$1;base64,<omitted>")
 }
